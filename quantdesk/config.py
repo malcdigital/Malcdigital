@@ -1,0 +1,254 @@
+"""Configuration and risk profiles.
+
+The risk profile is the single most important knob in the system: it decides
+which instruments are eligible, how much capital a single idea may consume, how
+far a stop sits from entry, and how long a position is allowed to work.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+from dataclasses import dataclass, field, asdict
+from pathlib import Path
+from typing import Any
+
+
+DEFAULT_HOME = Path(os.environ.get("QUANTDESK_HOME", Path.home() / ".quantdesk"))
+
+
+@dataclass(frozen=True)
+class RiskProfile:
+    """Parameters that define how aggressively the desk trades."""
+
+    name: str
+    label: str
+    description: str
+
+    # --- capital allocation -------------------------------------------------
+    max_position_pct: float
+    """Largest fraction of total equity a single position may occupy."""
+
+    risk_per_trade_pct: float
+    """Fraction of equity lost if the stop is hit. Drives position size."""
+
+    max_positions: int
+    """Concurrent open positions. Caps correlation and admin overhead."""
+
+    cash_floor_pct: float
+    """Fraction of equity never deployed, so there is always dry powder."""
+
+    # --- trade management ---------------------------------------------------
+    atr_stop_mult: float
+    """Initial stop distance measured in ATRs below entry."""
+
+    target_r_multiples: tuple[float, ...]
+    """Profit targets expressed as multiples of the initial risk (R)."""
+
+    trail_after_r: float
+    """Once this much open profit (in R) is reached, trail the stop."""
+
+    trail_atr_mult: float
+    """Trailing stop distance in ATRs once trailing activates."""
+
+    max_hold_days: int
+    """Time stop. Capital tied up longer than this is capital wasted."""
+
+    # --- idea selection -----------------------------------------------------
+    min_score: float
+    """Composite score (0-100) an idea must clear to be actionable."""
+
+    allowed_asset_types: tuple[str, ...]
+    max_annual_volatility: float
+    """Reject instruments whose realised volatility exceeds this."""
+
+    min_avg_dollar_volume: float
+    """Liquidity floor, so simulated fills stay believable."""
+
+    etf_target_pct: float
+    """Share of the deployed book that should sit in ETFs rather than singles."""
+
+    def size_position(
+        self, equity: float, entry: float, stop: float
+    ) -> tuple[int, str]:
+        """Return (shares, explanation) for a trade, honouring both risk caps.
+
+        Two independent limits apply and the tighter one wins:
+          * risk-based  - shares such that (entry - stop) * shares == risk budget
+          * exposure    - shares such that entry * shares <= max position value
+        """
+        if entry <= 0:
+            return 0, "invalid entry price"
+        per_share_risk = entry - stop
+        if per_share_risk <= 0:
+            return 0, "stop must sit below entry for a long position"
+
+        risk_budget = equity * self.risk_per_trade_pct
+        by_risk = int(risk_budget // per_share_risk)
+
+        exposure_cap = equity * self.max_position_pct
+        by_exposure = int(exposure_cap // entry)
+
+        shares = max(0, min(by_risk, by_exposure))
+        if shares == 0:
+            return 0, "position rounds to zero shares under current caps"
+        binding = "risk budget" if by_risk <= by_exposure else "position-size cap"
+        return shares, (
+            f"{shares} shares - {binding} is the binding constraint "
+            f"(risk budget ${risk_budget:,.0f} at ${per_share_risk:,.2f}/share, "
+            f"exposure cap ${exposure_cap:,.0f})"
+        )
+
+
+CONSERVATIVE = RiskProfile(
+    name="conservative",
+    label="Conservative",
+    description=(
+        "Capital preservation first. Broad ETFs and large, liquid, low-volatility "
+        "names. Small positions, wide stops so ordinary noise does not eject you, "
+        "and long holding periods."
+    ),
+    max_position_pct=0.08,
+    risk_per_trade_pct=0.004,
+    max_positions=8,
+    cash_floor_pct=0.25,
+    atr_stop_mult=3.0,
+    target_r_multiples=(2.0, 3.5),
+    trail_after_r=1.5,
+    trail_atr_mult=3.5,
+    max_hold_days=120,
+    min_score=62.0,
+    allowed_asset_types=("etf", "stock"),
+    max_annual_volatility=0.35,
+    min_avg_dollar_volume=25_000_000,
+    etf_target_pct=0.70,
+)
+
+MODERATE = RiskProfile(
+    name="moderate",
+    label="Moderate",
+    description=(
+        "Balanced growth. A core of index and sector ETFs with satellite positions "
+        "in trending large- and mid-cap stocks. Medium stops and multi-week holds."
+    ),
+    max_position_pct=0.12,
+    risk_per_trade_pct=0.0075,
+    max_positions=10,
+    cash_floor_pct=0.15,
+    atr_stop_mult=2.5,
+    target_r_multiples=(2.0, 4.0),
+    trail_after_r=1.25,
+    trail_atr_mult=3.0,
+    max_hold_days=60,
+    min_score=58.0,
+    allowed_asset_types=("etf", "stock"),
+    max_annual_volatility=0.55,
+    min_avg_dollar_volume=10_000_000,
+    etf_target_pct=0.45,
+)
+
+AGGRESSIVE = RiskProfile(
+    name="aggressive",
+    label="Aggressive",
+    description=(
+        "Momentum and growth hunting. Higher-beta single names and thematic ETFs, "
+        "larger positions, tighter stops and shorter holds. Expect a lower win rate "
+        "paid for by larger winners - and materially larger drawdowns."
+    ),
+    max_position_pct=0.18,
+    risk_per_trade_pct=0.0125,
+    max_positions=12,
+    cash_floor_pct=0.05,
+    atr_stop_mult=2.0,
+    target_r_multiples=(1.5, 3.0, 5.0),
+    trail_after_r=1.0,
+    trail_atr_mult=2.25,
+    max_hold_days=30,
+    min_score=54.0,
+    allowed_asset_types=("etf", "stock"),
+    max_annual_volatility=0.95,
+    min_avg_dollar_volume=5_000_000,
+    etf_target_pct=0.25,
+)
+
+RISK_PROFILES: dict[str, RiskProfile] = {
+    p.name: p for p in (CONSERVATIVE, MODERATE, AGGRESSIVE)
+}
+
+
+def get_profile(name: str) -> RiskProfile:
+    key = (name or "").strip().lower()
+    if key not in RISK_PROFILES:
+        valid = ", ".join(RISK_PROFILES)
+        raise KeyError(f"unknown risk profile {name!r}; choose one of: {valid}")
+    return RISK_PROFILES[key]
+
+
+@dataclass
+class Settings:
+    """Everything the desk needs to know to run, persisted as JSON."""
+
+    home: Path = field(default_factory=lambda: DEFAULT_HOME)
+    risk_profile: str = "moderate"
+    starting_cash: float = 100_000.0
+    data_provider: str = "auto"
+    """auto | yahoo | stooq | synthetic - 'auto' falls back down the list."""
+
+    broker: str = "paper"
+    """paper (built-in simulator) | alpaca (Alpaca paper account)."""
+
+    news_enabled: bool = True
+    news_lookback_days: int = 7
+    max_news_per_symbol: int = 25
+
+    watchlist: list[str] = field(default_factory=list)
+    """Extra symbols to consider on top of the risk-tier universe."""
+
+    commission_per_share: float = 0.0
+    slippage_bps: float = 5.0
+    """Simulated slippage in basis points applied against you on every fill."""
+
+    @property
+    def db_path(self) -> Path:
+        return self.home / "portfolio.db"
+
+    @property
+    def cache_dir(self) -> Path:
+        return self.home / "cache"
+
+    @property
+    def reports_dir(self) -> Path:
+        return self.home / "reports"
+
+    @property
+    def config_path(self) -> Path:
+        return self.home / "config.json"
+
+    @property
+    def profile(self) -> RiskProfile:
+        return get_profile(self.risk_profile)
+
+    def ensure_dirs(self) -> None:
+        for d in (self.home, self.cache_dir, self.reports_dir):
+            d.mkdir(parents=True, exist_ok=True)
+
+    # --- persistence --------------------------------------------------------
+    def to_dict(self) -> dict[str, Any]:
+        d = asdict(self)
+        d["home"] = str(self.home)
+        return d
+
+    def save(self) -> None:
+        self.ensure_dirs()
+        self.config_path.write_text(json.dumps(self.to_dict(), indent=2) + "\n")
+
+    @classmethod
+    def load(cls, home: Path | str | None = None) -> "Settings":
+        base = Path(home) if home else DEFAULT_HOME
+        path = base / "config.json"
+        if not path.exists():
+            return cls(home=base)
+        raw = json.loads(path.read_text())
+        raw["home"] = Path(raw.get("home", base))
+        known = {f for f in cls.__dataclass_fields__}
+        return cls(**{k: v for k, v in raw.items() if k in known})

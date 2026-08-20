@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "quantdesk"
+version = "0.1.0"
+description = "Paper-trading research desk: candlestick, trend and news analysis with risk-tiered trade plans"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pandas>=2.0",
+    "numpy>=1.24",
+    "requests>=2.31",
+    "yfinance>=0.2.40",
+]
+
+[project.optional-dependencies]
+alpaca = ["alpaca-py>=0.20"]
+dev = ["pytest>=7.0"]
+
+[project.scripts]
+quantdesk = "quantdesk.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["quantdesk*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]
