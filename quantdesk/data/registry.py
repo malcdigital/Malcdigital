@@ -11,7 +11,7 @@ from quantdesk.data.cache import BarCache
 _FALLBACK_ORDER = ("yahoo", "stooq", "synthetic")
 
 
-def _build(name: str) -> DataProvider:
+def _build(name: str, csv_dir: Path | str | None = None) -> DataProvider:
     if name == "yahoo":
         from quantdesk.data.yahoo import YahooProvider
 
@@ -24,6 +24,12 @@ def _build(name: str) -> DataProvider:
         from quantdesk.data.synthetic import SyntheticProvider
 
         return SyntheticProvider()
+    if name == "csv":
+        from quantdesk.data.csv_files import CsvProvider
+
+        if csv_dir is None:
+            raise ValueError("the csv provider needs a directory")
+        return CsvProvider(csv_dir)
     raise ValueError(f"unknown data provider {name!r}")
 
 
@@ -91,6 +97,7 @@ def get_provider(
     cache_dir: Path | None = None,
     cache_ttl: int = 6 * 3600,
     allow_synthetic: bool = True,
+    csv_dir: Path | str | None = None,
 ) -> CachingProvider:
     """Build the provider stack described by ``name``.
 
@@ -125,5 +132,10 @@ def get_provider(
 
     if name == "synthetic" and not allow_synthetic:
         raise DataUnavailable("--strict forbids the synthetic data provider")
+
+    if name == "csv":
+        # Files on disk are already local; a second cache layer would only add
+        # a chance of serving something staler than the file itself.
+        return CachingProvider([_build(name, csv_dir)], None)
 
     return CachingProvider([_build(name)], cache)

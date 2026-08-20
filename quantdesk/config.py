@@ -231,7 +231,11 @@ class Settings:
     risk_profile: str = "moderate"
     starting_cash: float = 100_000.0
     data_provider: str = "auto"
-    """auto | yahoo | stooq | synthetic - 'auto' falls back down the list."""
+    """auto | yahoo | stooq | csv | synthetic - 'auto' falls back down the list."""
+
+    csv_dir: str = ""
+    """Directory of <SYMBOL>.csv files, used when data_provider is 'csv'.
+    Empty means the desk's own data/bars directory."""
 
     broker: str = "paper"
     """paper (built-in simulator) | alpaca (Alpaca paper account)."""
@@ -274,6 +278,11 @@ class Settings:
     @property
     def cache_dir(self) -> Path:
         return self.home / "cache"
+
+    @property
+    def bars_dir(self) -> Path:
+        """Where `quantdesk fetch` saves history for offline backtesting."""
+        return Path(self.csv_dir).expanduser() if self.csv_dir else self.home / "bars"
 
     @property
     def reports_dir(self) -> Path:

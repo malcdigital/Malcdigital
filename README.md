@@ -183,9 +183,25 @@ The only way to find out whether any of this works — and the easiest thing in
 quantitative finance to get flatteringly wrong.
 
 ```bash
+# fetch once, then backtest offline and reproducibly
+quantdesk fetch --years 10
+quantdesk backtest --provider csv --scan-every 2
+
+# or straight from the live feed
 quantdesk backtest --symbols SPY,QQQ,AAPL,MSFT,NVDA --scan-every 2
-quantdesk backtest --max-symbols 40 --start 2019-01-01
 ```
+
+**Fetching first is the better habit.** A backtest run against a live feed is
+not repeatable: providers revise history and re-adjust for splits and dividends,
+so re-running next month silently gives different numbers. Saving the bars pins
+the input — and it means a provider outage stops you fetching, not working.
+
+`fetch` writes `<SYMBOL>.csv` files and never writes generated data into them; if
+the feed is down it fails rather than quietly saving something fake. The reader
+is forgiving about layout, so a CSV you already have from a broker export
+usually works: Yahoo-style headers, lowercase variants, several date column
+names, and it prefers an adjusted close when one is present (splits otherwise
+read as real price gaps).
 
 ```
                              STRATEGY   BUY & HOLD
@@ -385,6 +401,7 @@ number that actually determines position size.
 quantdesk doctor                   # can this machine reach live market data?
 quantdesk init --cash 100000 --risk moderate --watchlist NVDA,AMD
 quantdesk run --strict             # one trading day + report, real data only
+quantdesk fetch --years 10          # save history for offline, repeatable tests
 quantdesk backtest --max-symbols 20   # test the rules against history
 quantdesk serve                    # dashboard with charts at localhost:8000
 quantdesk approve --list           # review queued ideas in the terminal
@@ -406,6 +423,7 @@ Global flags work before or after the subcommand: `--risk`, `--provider`,
 | `--strict` | Real market data only. Probes the feed and exits 2 if it is dead. |
 | `--offline` | Generated data and placeholder headlines. No network calls. |
 | `--provider yahoo` | Pin one source; no fallback chain. |
+| `--provider csv --csv-dir DIR` | Read saved bars; reproducible and offline. |
 | `--manual` | Queue ideas for approval instead of placing them (`serve`). |
 
 ---
@@ -436,6 +454,10 @@ Tried in order, falling back automatically:
 1. **Yahoo Finance** via `yfinance` — free, no key
 2. **Stooq** CSV — free, no key
 3. **Generated data** — so the desk still runs offline
+
+Plus `--provider csv`, which is not in the fallback chain because it is a
+deliberate choice rather than a degradation: it reads exactly the files you
+saved, so results are reproducible.
 
 Runs using generated data are labelled `SIMULATED PRICE DATA` in every report
 and on the CLI, and `--strict` removes step 3 entirely. Bars are cached to
@@ -477,7 +499,7 @@ pip install pytest
 python -m pytest tests/ -q
 ```
 
-182 tests, green on Python 3.10–3.13 and on the oldest supported dependencies.
+204 tests, green on Python 3.10–3.13 and on the oldest supported dependencies.
 
 Indicators are checked against hand-derived values; every candlestick detector
 against a constructed example of its pattern; the trend classifier for
@@ -506,7 +528,7 @@ quantdesk/
   backtest_report.py   backtest report (text + HTML)
   diagnostics.py       preflight checks
   notify.py            email / webhook delivery
-  data/                providers (Yahoo, Stooq, synthetic), cache, symbol list
+  data/                providers (Yahoo, Stooq, CSV, synthetic), cache, symbols
   analysis/            indicators, candlestick patterns, trend, weekly timeframe
   news/                RSS retrieval, financial sentiment
   strategy/            universes, screener, regime, scoring, risk, trade plans
