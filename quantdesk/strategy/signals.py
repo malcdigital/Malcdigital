@@ -18,6 +18,7 @@ import pandas as pd
 
 from quantdesk.analysis import indicators as ind
 from quantdesk.analysis.candles import CandlestickScanner, summarise_patterns
+from quantdesk.analysis.timeframe import TimeframeCheck, confirm as confirm_timeframe
 from quantdesk.analysis.trend import TrendState, classify, find_levels, nearest_levels
 from quantdesk.config import RiskProfile
 
@@ -55,6 +56,7 @@ class SignalReport:
     vetoes: list[str] = field(default_factory=list)
     support: float | None = None
     resistance: float | None = None
+    timeframe: TimeframeCheck | None = None
     enriched: pd.DataFrame | None = None
     """Indicator frame, kept so downstream consumers need not recompute it."""
 
@@ -197,6 +199,7 @@ def score_symbol(
     news_summary: str = "",
     asset_type: str = "stock",
     sector_bias: float = 0.0,
+    multi_timeframe: bool = True,
 ) -> SignalReport:
     """Score one candidate across all dimensions and apply hard vetoes."""
     enriched = ind.compute_all(bars)
@@ -301,6 +304,31 @@ def score_symbol(
     score = float(np.clip(50.0 + directional * 50.0, 0.0, 100.0))
 
     setup = detect_setup(enriched, trend, pattern_summary, direction)
+
+    # Higher-timeframe agreement. Checked after the direction is known, since
+    # "agrees" means something different for a long than for a short.
+    timeframe: TimeframeCheck | None = None
+    if multi_timeframe:
+        try:
+            timeframe = confirm_timeframe(bars, direction)
+        except Exception:
+            timeframe = None
+
+    if timeframe is not None and timeframe.verdict != "neutral":
+        # Recorded as a component so the reasoning stays visible in the report.
+        # Its value is already expressed relative to the trade's own direction
+        # (+1 means "agrees with this trade"), so unlike the others it must not
+        # be sign-flipped for a short - only re-weighted into the running total.
+        weekly_component = Component(
+            "weekly", timeframe.score_adjustment, 0.15,
+            f"Weekly: {timeframe.reason}.",
+        )
+        components.append(weekly_component)
+        weighted_sum = directional * total_weight + weekly_component.contribution
+        total_weight += weekly_component.weight
+        directional = weighted_sum / total_weight
+        score = float(np.clip(50.0 + directional * 50.0, 0.0, 100.0))
+
     levels = find_levels(bars)
     support, resistance = nearest_levels(levels, close)
 
@@ -308,6 +336,8 @@ def score_symbol(
     # These are not penalties. A candidate failing any of them is not traded,
     # regardless of how attractive the rest of the picture looks.
     vetoes: list[str] = []
+    if timeframe is not None and timeframe.contradicts:
+        vetoes.append(f"higher timeframe disagrees - {timeframe.reason}")
     if direction == "short" and not profile.allow_short:
         vetoes.append(
             f"the {profile.name} profile does not permit short positions"
@@ -355,5 +385,6 @@ def score_symbol(
         vetoes=vetoes,
         support=support.price if support else None,
         resistance=resistance.price if resistance else None,
+        timeframe=timeframe,
         enriched=enriched,
     )
