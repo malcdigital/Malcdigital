@@ -196,6 +196,7 @@ def score_symbol(
     news_coverage: float = 0.0,
     news_summary: str = "",
     asset_type: str = "stock",
+    sector_bias: float = 0.0,
 ) -> SignalReport:
     """Score one candidate across all dimensions and apply hard vetoes."""
     enriched = ind.compute_all(bars)
@@ -267,9 +268,21 @@ def score_symbol(
         f"Relative strength: {rs * 100:+.1f}% versus the benchmark over ~3 months.",
     ))
 
-    # 6. Volume confirmation via OBV.
+    # 6. Sector rotation - buying a good name in the weakest sector is fighting
+    #    the current that actually moves it.
+    if sector_bias:
+        components.append(Component(
+            "sector", float(np.clip(sector_bias, -1, 1)), 0.10,
+            f"Sector rotation: {'leading' if sector_bias > 0.2 else 'lagging' if sector_bias < -0.2 else 'middle of'} "
+            "the sector ranking.",
+        ))
+
+    # 7. Volume confirmation via OBV.
     obv_slope = f("obv_slope")
-    vol_component = float(np.clip(obv_slope / 0.5, -1, 1)) if np.isfinite(obv_slope) else 0.0
+    # obv_slope is net accumulation per day as a percentage of average volume.
+    # The divisor is set from the observed spread (interquartile range roughly
+    # +/-20) so ordinary readings stay graded and only genuine extremes saturate.
+    vol_component = float(np.clip(obv_slope / 30.0, -1, 1)) if np.isfinite(obv_slope) else 0.0
     components.append(Component(
         "volume", vol_component, 0.10,
         f"Volume: OBV trend {'confirms' if vol_component > 0.1 else 'does not confirm'} "

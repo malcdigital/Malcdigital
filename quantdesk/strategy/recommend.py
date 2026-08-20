@@ -11,6 +11,9 @@ from quantdesk.config import RiskProfile, Settings
 from quantdesk.data.base import DataProvider, Instrument
 from quantdesk.news.fetch import NewsFetcher
 from quantdesk.news.sentiment import SentimentAnalyzer, aggregate_news_sentiment
+from quantdesk.strategy.regime import (
+    MarketRegime, SECTOR_ETFS, SectorRanking, assess_regime, rank_sectors,
+)
 from quantdesk.strategy.risk import TradePlan, build_trade_plan
 from quantdesk.strategy.signals import SignalReport, score_symbol
 from quantdesk.strategy.universe import (
@@ -70,6 +73,8 @@ class ScanResult:
     used_synthetic_data: bool = False
     used_synthetic_news: bool = False
     scanned: int = 0
+    regime: MarketRegime | None = None
+    sectors: SectorRanking | None = None
 
     @property
     def top_rejection_reasons(self) -> dict[str, int]:
@@ -124,6 +129,22 @@ class Recommender:
         except Exception:
             benchmark_bars = None
 
+        # Portfolio-level context, computed once and applied to every candidate.
+        regime: MarketRegime | None = None
+        sectors: SectorRanking | None = None
+        if benchmark_bars is not None:
+            try:
+                regime = assess_regime(benchmark_bars)
+            except Exception:
+                regime = None
+            try:
+                sector_bars = self.provider.batch_history(list(SECTOR_ETFS), 400)
+                sectors = rank_sectors(sector_bars, benchmark_bars)
+            except Exception:
+                sectors = None
+        result.regime = regime
+        result.sectors = sectors
+
         def analyse(symbol: str):
             bars = self.provider.history(symbol, 400)
             instrument = self.provider.instrument(symbol)
@@ -155,6 +176,9 @@ class Recommender:
                 news_coverage=news_cov,
                 news_summary=news_summary,
                 asset_type=instrument.asset_type,
+                sector_bias=(
+                    sectors.bias_for(instrument.sector) if sectors else 0.0
+                ),
             )
             return report, instrument, bars, synthetic_news
 
@@ -176,11 +200,14 @@ class Recommender:
         result.used_synthetic_data = "synthetic" in getattr(self.provider, "name", "")
 
         passing.sort(key=lambda t: -t[0].score)
-        result.recommendations = self._diversify(passing, equity, limit, exclude)
+        result.recommendations = self._diversify(
+            passing, equity, limit, exclude, regime
+        )
         return result
 
     def _diversify(self, passing, equity: float, limit: int,
-                   already_held: set[str] | None = None) -> list[Recommendation]:
+                   already_held: set[str] | None = None,
+                   regime: MarketRegime | None = None) -> list[Recommendation]:
         """Rank by score while enforcing sector caps and the ETF/stock mix.
 
         Ten uncorrelated ideas beat ten correlated ones with better scores: if the
@@ -208,10 +235,25 @@ class Recommender:
             if not instrument.is_etf and remaining <= etfs_still_needed:
                 continue  # reserve the last slots for fund exposure
 
+            # Scale the capital a trade is sized against by the market regime.
+            # Exposure is scaled rather than switched: a binary gate whipsaws
+            # around the 200-day line, while scaling steps risk down as
+            # conditions deteriorate without betting everything on one close.
+            if regime is not None:
+                exposure = (
+                    regime.short_exposure if report.direction == "short"
+                    else regime.long_exposure
+                )
+            else:
+                exposure = 1.0
+            if exposure <= 0.0:
+                continue
+            sizing_equity = equity * exposure
+
             if report.direction == "short":
                 if short_count >= self.profile.max_short_positions:
                     continue
-                built = self._build_bearish_plan(report, bars, instrument, equity)
+                built = self._build_bearish_plan(report, bars, instrument, sizing_equity)
                 if built is None:
                     continue
                 plan, instrument = built
@@ -225,7 +267,7 @@ class Recommender:
                     ),
                     trend_state=report.trend,
                     profile=self.profile,
-                    equity=equity,
+                    equity=sizing_equity,
                     setup=report.setup,
                     support_level=report.support,
                     resistance_level=report.resistance,

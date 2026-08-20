@@ -128,6 +128,28 @@ def donchian(high: pd.Series, low: pd.Series, window: int = 20) -> pd.DataFrame:
     return pd.DataFrame({"upper": upper, "lower": lower, "middle": (upper + lower) / 2})
 
 
+def slope_per_day(series: pd.Series, window: int = 20) -> pd.Series:
+    """Least-squares slope in the series' own units per day.
+
+    Kept separate from :func:`slope_pct_per_day`, which divides by the series
+    level. That normalisation is only valid for a strictly positive series such
+    as price: applied to something that can go negative - OBV being the obvious
+    case - dividing a negative slope by a negative mean flips the sign, turning
+    distribution into apparent accumulation.
+    """
+    values = series.to_numpy(dtype=float)
+    n = len(values)
+    out = np.full(n, np.nan)
+    if n < window or window < 2:
+        return pd.Series(out, index=series.index, name=series.name)
+
+    weights = np.arange(window, dtype=float)
+    weights -= weights.mean()
+    sxx = float((weights**2).sum())
+    out[window - 1:] = np.convolve(values, weights[::-1], mode="valid") / sxx
+    return pd.Series(out, index=series.index, name=series.name)
+
+
 def slope_pct_per_day(series: pd.Series, window: int = 20) -> pd.Series:
     """Least-squares slope of the series, expressed as % of its own level per day.
 
@@ -192,12 +214,18 @@ def compute_all(bars: pd.DataFrame) -> pd.DataFrame:
     out = out.join(adx(high, low, close).add_prefix("adx_"))
     out = out.join(stochastic(high, low, close).add_prefix("stoch_"))
     out["obv"] = obv(close, volume)
-    out["obv_slope"] = slope_pct_per_day(out["obv"].replace(0, np.nan).ffill(), 20)
+    out["volume_sma20"] = sma(volume, 20)
+    # Net accumulation per day, as a percentage of average daily volume. OBV is a
+    # signed cumulative total, so it must not be normalised by its own level.
+    out["obv_slope"] = (
+        slope_per_day(out["obv"], 20)
+        / out["volume_sma20"].replace(0.0, np.nan)
+        * 100.0
+    )
     out["volatility20"] = realized_volatility(close, 20)
     out = out.join(donchian(high, low, 20).add_prefix("dc20_"))
     out = out.join(donchian(high, low, 55).add_prefix("dc55_"))
     out["slope20"] = slope_pct_per_day(close, 20)
-    out["volume_sma20"] = sma(volume, 20)
     out["volume_ratio"] = volume / out["volume_sma20"].replace(0.0, np.nan)
     out["dollar_volume20"] = (close * volume).rolling(20, min_periods=5).mean()
     return out
