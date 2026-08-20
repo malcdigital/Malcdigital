@@ -37,3 +37,24 @@ def trending_prefix():
         return rows
 
     return _build
+
+
+@pytest.fixture
+def no_network(monkeypatch):
+    """Force every outbound data path to fail fast.
+
+    The diagnostics module exists to probe live feeds, so testing it naively
+    means the suite calls Yahoo and Stooq for real - slow, rude to the service,
+    and it makes CI depend on someone else's uptime. Patching the providers to
+    raise lets the failure path be tested exactly, offline and instantly.
+    """
+    from quantdesk.data.base import DataUnavailable
+    from quantdesk.data.stooq import StooqProvider
+    from quantdesk.data.yahoo import YahooProvider
+
+    def refuse(self, symbol, lookback_days=400):
+        raise DataUnavailable(f"network disabled in tests ({symbol})")
+
+    monkeypatch.setattr(YahooProvider, "history", refuse)
+    monkeypatch.setattr(StooqProvider, "history", refuse)
+    return refuse
