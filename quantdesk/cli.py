@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -305,6 +306,63 @@ def cmd_run(args) -> int:
     return 0
 
 
+def cmd_backtest(args) -> int:
+    """Replay the strategy over history and compare it to buy-and-hold."""
+    settings = load_settings(args)
+    engine = _engine(settings, getattr(args, "offline", False),
+                     getattr(args, "strict", False))
+
+    from quantdesk.backtest import Backtester, BacktestConfig
+    from quantdesk.backtest_report import to_html, to_text
+    from quantdesk.strategy.screener import load_symbols
+    from quantdesk.strategy.universe import universe_for
+
+    if args.symbols:
+        symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
+    elif args.symbols_file:
+        symbols = load_symbols(args.symbols_file)
+    else:
+        symbols = universe_for(settings.profile.name)
+    if args.max_symbols:
+        symbols = symbols[: args.max_symbols]
+
+    start = date.fromisoformat(args.start) if args.start else None
+    end = date.fromisoformat(args.end) if args.end else None
+
+    config = BacktestConfig(
+        symbols=symbols,
+        start=start,
+        end=end,
+        starting_cash=args.cash,
+        risk_profile=settings.profile.name,
+        max_new_ideas=args.ideas,
+        scan_every=args.scan_every,
+    )
+
+    print(dim(f"Backtesting {len(symbols)} symbols on the "
+              f"{settings.profile.label.lower()} profile..."))
+    print(dim("Loading history and precomputing indicators - this takes a moment.\n"))
+
+    started = time.time()
+
+    def progress(done: int, total: int, equity: float) -> None:
+        elapsed = time.time() - started
+        remaining = (elapsed / max(done, 1)) * (total - done)
+        print(dim(f"  {done}/{total} sessions  equity ${equity:,.0f}  "
+                  f"~{remaining:.0f}s left"), flush=True)
+
+    result = Backtester(engine.provider, config).run(progress=progress)
+    print()
+    print(to_text(result))
+
+    if not args.no_files:
+        settings.ensure_dirs()
+        path = settings.reports_dir / "backtest.html"
+        path.write_text(to_html(result), encoding="utf-8")
+        print(dim(f"\nHTML report: {path}"))
+    return 0
+
+
 def cmd_serve(args) -> int:
     """Run the local dashboard."""
     settings = load_settings(args)
@@ -602,6 +660,23 @@ def build_parser() -> argparse.ArgumentParser:
                    help="POST a summary to QUANTDESK_WEBHOOK_URL")
     _add_common(p)
     p.set_defaults(func=cmd_run)
+
+    p = sub.add_parser("backtest",
+                       help="replay the strategy over history vs buy-and-hold")
+    p.add_argument("--symbols", help="comma-separated symbols to test")
+    p.add_argument("--symbols-file", help="newline-separated symbol list")
+    p.add_argument("--max-symbols", type=int,
+                   help="cap the universe (runtime scales with it)")
+    p.add_argument("--start", help="YYYY-MM-DD")
+    p.add_argument("--end", help="YYYY-MM-DD")
+    p.add_argument("--cash", type=float, default=100_000.0)
+    p.add_argument("--ideas", type=int, default=4)
+    p.add_argument("--scan-every", type=int, default=1,
+                   help="sessions between idea scans; positions are still "
+                        "managed daily. Raise it to trade fidelity for speed.")
+    p.add_argument("--no-files", action="store_true")
+    _add_common(p)
+    p.set_defaults(func=cmd_backtest)
 
     p = sub.add_parser("serve", help="run the local dashboard with charts")
     p.add_argument("--port", type=int, default=8000)

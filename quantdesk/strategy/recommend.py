@@ -95,6 +95,7 @@ class Recommender:
         settings: Settings,
         news_fetcher: NewsFetcher | None = None,
         max_workers: int = 8,
+        precomputer=None,
     ) -> None:
         self.provider = provider
         self.settings = settings
@@ -103,6 +104,9 @@ class Recommender:
         self.analyzer = SentimentAnalyzer()
         self.max_workers = max_workers
         self.last_screen = None
+        self.precomputer = precomputer
+        """Optional cache of backward-looking frames, used by the backtester to
+        avoid recomputing the same indicators on every simulated session."""
 
     def scan(
         self,
@@ -171,9 +175,16 @@ class Recommender:
                 except Exception:
                     news_summary = "news unavailable"
 
+            pre = (
+                self.precomputer.get(symbol, bars)
+                if self.precomputer is not None else (None, None, None)
+            )
             report = score_symbol(
                 symbol=symbol,
                 bars=bars,
+                enriched=pre[0],
+                weekly=pre[1],
+                weekly_enriched=pre[2],
                 profile=self.profile,
                 benchmark_bars=benchmark_bars,
                 news_score=news_score,
