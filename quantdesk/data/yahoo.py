@@ -7,6 +7,8 @@ the cache and the fallback chain in the registry.
 
 from __future__ import annotations
 
+import logging
+
 import pandas as pd
 
 from quantdesk.data.base import Bars, DataProvider, DataUnavailable, Instrument, normalise
@@ -22,6 +24,12 @@ class YahooProvider(DataProvider):
             raise DataUnavailable(
                 "yfinance is not installed; run: pip install yfinance"
             ) from exc
+
+        # yfinance logs its own multi-line traceback for every failed symbol.
+        # A universe scan skips dead symbols by design, so that output is noise
+        # that buries the desk's own reporting. Failures still surface as
+        # DataUnavailable exceptions, which the callers handle.
+        logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 
     def history(self, symbol: str, lookback_days: int = 400) -> Bars:
         import yfinance as yf

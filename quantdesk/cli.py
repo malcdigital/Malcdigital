@@ -50,11 +50,38 @@ def load_settings(args) -> Settings:
     return settings
 
 
-def _engine(settings: Settings, offline: bool = False):
+def _engine(settings: Settings, offline: bool = False, strict: bool = False):
+    from quantdesk.data import get_provider
     from quantdesk.engine import TradingEngine
     from quantdesk.news.fetch import NewsFetcher
 
-    return TradingEngine(settings, news_fetcher=NewsFetcher(offline=offline))
+    provider = None
+    if strict:
+        # Building the provider is not enough: yfinance imports cleanly and only
+        # fails when it tries to fetch. Without an actual probe, a dead feed
+        # yields an empty report at exit 0 - the silent failure --strict exists
+        # to prevent. So fetch the benchmark and refuse to start if it is absent.
+        from quantdesk.data.base import DataUnavailable
+        from quantdesk.strategy.universe import BENCHMARK
+
+        provider = get_provider(
+            settings.data_provider, settings.cache_dir, allow_synthetic=False
+        )
+        try:
+            probe = provider.history(BENCHMARK, 60)
+        except Exception as exc:
+            raise DataUnavailable(
+                f"--strict: no live market data ({BENCHMARK} could not be "
+                f"fetched: {exc}). Run 'quantdesk doctor' to diagnose."
+            ) from exc
+        if probe.empty:
+            raise DataUnavailable(
+                f"--strict: {BENCHMARK} returned no rows. "
+                "Run 'quantdesk doctor' to diagnose."
+            )
+    return TradingEngine(
+        settings, provider=provider, news_fetcher=NewsFetcher(offline=offline)
+    )
 
 
 # --- commands ---------------------------------------------------------------
@@ -110,7 +137,8 @@ def cmd_profiles(args) -> int:
 
 def cmd_scan(args) -> int:
     settings = load_settings(args)
-    engine = _engine(settings, getattr(args, "offline", False))
+    engine = _engine(settings, getattr(args, "offline", False),
+                     getattr(args, "strict", False))
     equity = engine.current_equity()
 
     symbols = None
@@ -151,7 +179,8 @@ def cmd_scan(args) -> int:
 
 def cmd_analyze(args) -> int:
     settings = load_settings(args)
-    engine = _engine(settings, getattr(args, "offline", False))
+    engine = _engine(settings, getattr(args, "offline", False),
+                     getattr(args, "strict", False))
     symbol = args.symbol.upper()
 
     from quantdesk.analysis import indicators as ind
@@ -237,7 +266,8 @@ def cmd_analyze(args) -> int:
 
 def cmd_run(args) -> int:
     settings = load_settings(args)
-    engine = _engine(settings, getattr(args, "offline", False))
+    engine = _engine(settings, getattr(args, "offline", False),
+                     getattr(args, "strict", False))
     outcome = engine.run_daily(
         max_new_ideas=args.ideas,
         execute=not args.dry_run,
@@ -273,6 +303,35 @@ def cmd_run(args) -> int:
             except Exception as exc:
                 print(red(f"webhook failed: {exc}"))
     return 0
+
+
+def cmd_doctor(args) -> int:
+    """Verify this machine can actually reach live market data."""
+    from quantdesk.diagnostics import run_diagnostics
+
+    print(bold("\nQuantDesk preflight"))
+    print(dim("Checking whether this machine gets real market data...\n"))
+
+    diagnosis = run_diagnostics(include_news=not args.skip_news)
+
+    for check in diagnosis.checks:
+        mark = green("  ok  ") if check.ok else red(" FAIL ")
+        print(f"{mark} {check.name:<30} {check.detail}")
+        if check.fix:
+            print(dim(f"         -> {check.fix}"))
+
+    print()
+    if diagnosis.live_data_available:
+        print(green(bold("Live market data is available on this machine.")))
+        print(dim("Run with --strict to guarantee reports never use generated data:"))
+        print(dim("  quantdesk run --strict"))
+        return 0
+
+    print(red(bold("NO LIVE MARKET DATA.")))
+    print("Every price source failed, so runs would use GENERATED data")
+    print("(labelled SIMULATED PRICE DATA in reports). Fix the failures above,")
+    print("or use --strict to make the desk refuse to start instead.")
+    return 1
 
 
 def cmd_schedule(args) -> int:
@@ -326,7 +385,8 @@ def cmd_schedule(args) -> int:
 
 def cmd_status(args) -> int:
     settings = load_settings(args)
-    engine = _engine(settings, getattr(args, "offline", False))
+    engine = _engine(settings, getattr(args, "offline", False),
+                     getattr(args, "strict", False))
     portfolio = engine.store.load_portfolio()
 
     bars = engine._bars_for(portfolio.symbols)
@@ -386,7 +446,8 @@ def cmd_history(args) -> int:
 def cmd_backfill(args) -> int:
     """Replay the strategy day by day to build up history quickly."""
     settings = load_settings(args)
-    engine = _engine(settings, getattr(args, "offline", False))
+    engine = _engine(settings, getattr(args, "offline", False),
+                     getattr(args, "strict", False))
     start = date.today() - timedelta(days=args.days)
     print(dim(f"Replaying {args.days} sessions from {start}...\n"))
 
@@ -432,6 +493,8 @@ def _add_common(p: argparse.ArgumentParser) -> None:
                    default=argparse.SUPPRESS, help="market data source")
     p.add_argument("--offline", action="store_true", default=argparse.SUPPRESS,
                    help="use generated data and headlines - no network calls")
+    p.add_argument("--strict", action="store_true", default=argparse.SUPPRESS,
+                   help="refuse to run on generated data - real market data only")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -448,6 +511,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="market data source")
     parser.add_argument("--offline", action="store_true",
                         help="use generated data and headlines - no network calls")
+    parser.add_argument("--strict", action="store_true",
+                        help="refuse to run on generated data - real market data only")
 
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -485,6 +550,11 @@ def build_parser() -> argparse.ArgumentParser:
     _add_common(p)
     p.set_defaults(func=cmd_run)
 
+    p = sub.add_parser("doctor", help="check this machine can reach live market data")
+    p.add_argument("--skip-news", action="store_true", help="only test price feeds")
+    _add_common(p)
+    p.set_defaults(func=cmd_doctor)
+
     p = sub.add_parser("schedule", help="run the desk automatically every weekday")
     p.add_argument("--at", default="16:30", help="local time, HH:MM (default 16:30)")
     p.add_argument("--ideas", type=int, default=5)
@@ -513,8 +583,13 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    from quantdesk.data.base import DataUnavailable
+
     try:
         return args.func(args)
+    except DataUnavailable as exc:
+        print(red(f"\nMarket data unavailable: {exc}"))
+        return 2
     except KeyboardInterrupt:
         print("\ninterrupted")
         return 130

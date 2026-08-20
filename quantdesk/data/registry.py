@@ -87,24 +87,43 @@ class CachingProvider(DataProvider):
 
 
 def get_provider(
-    name: str = "auto", cache_dir: Path | None = None, cache_ttl: int = 6 * 3600
+    name: str = "auto",
+    cache_dir: Path | None = None,
+    cache_ttl: int = 6 * 3600,
+    allow_synthetic: bool = True,
 ) -> CachingProvider:
     """Build the provider stack described by ``name``.
 
-    ``auto`` tries live sources first and falls back to synthetic data so the
+    ``auto`` tries live sources first and falls back to generated data so the
     desk still runs (clearly labelled) when the network is unavailable.
+
+    Set ``allow_synthetic=False`` when the caller specifically wants real market
+    data: the fallback to generated prices is then removed entirely, so a data
+    outage raises instead of quietly producing a report about a market that does
+    not exist.
     """
     cache = BarCache(cache_dir, cache_ttl) if cache_dir is not None else None
 
     if name == "auto":
+        order = _FALLBACK_ORDER
+        if not allow_synthetic:
+            order = tuple(p for p in order if p != "synthetic")
         built: list[DataProvider] = []
-        for candidate in _FALLBACK_ORDER:
+        for candidate in order:
             try:
                 built.append(_build(candidate))
             except Exception:
                 continue
         if not built:
+            if not allow_synthetic:
+                raise DataUnavailable(
+                    "no live market data provider could be initialised "
+                    "(install yfinance, or drop --strict to use generated data)"
+                )
             built = [_build("synthetic")]
         return CachingProvider(built, cache)
+
+    if name == "synthetic" and not allow_synthetic:
+        raise DataUnavailable("--strict forbids the synthetic data provider")
 
     return CachingProvider([_build(name)], cache)

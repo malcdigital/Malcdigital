@@ -16,16 +16,41 @@ every day.
 git clone <this repo> && cd Malcdigital
 pip install -r requirements.txt
 
+python -m quantdesk.cli doctor                                  # confirm live data works
 python -m quantdesk.cli init --cash 100000 --risk moderate
-python -m quantdesk.cli run
+python -m quantdesk.cli run --strict                            # real market data only
 ```
 
-That's it. `run` executes one trading day and prints a full report. To have it
-run itself every weekday:
+**Always run `doctor` first.** The desk is built to keep working when the
+network does not, by falling back to generated prices — right for a demo, wrong
+to discover a month into "real" paper trading. `doctor` answers one question
+plainly: is this machine actually getting live market data?
+
+```
+  ok   Python version                 3.12.4 on Darwin
+  ok   package: yfinance              v0.2.51
+  ok   Yahoo Finance (live prices)    SPY closed $571.34 on 2026-08-19 (30 bars, 1d old)
+  ok   Stooq (fallback prices)        SPY closed $571.34 on 2026-08-19
+  ok   News feed                      18 live articles from Yahoo Finance (newest 3h old)
+  ok   Resolved data source           'auto' resolves to: yahoo
+
+Live market data is available on this machine.
+```
+
+Then `--strict` guarantees it: it fetches the benchmark before starting and
+**refuses to run** (exit code 2) rather than produce a report about a market
+that does not exist. Without it, a dead feed silently yields generated prices —
+labelled in the report, but easy to miss.
+
+`run` executes one trading day and prints a full report. To have it run itself
+every weekday:
 
 ```bash
 python -m quantdesk.cli schedule --install     # weekdays at 16:30 local
 ```
+
+The scheduled job inherits whatever flags you pass, so add `--strict` there too
+if you never want a cron run quietly falling back to generated data.
 
 Try it without touching the network at all (uses clearly-labelled generated
 data, good for kicking the tyres):
@@ -174,8 +199,9 @@ number that actually determines position size.
 ## Commands
 
 ```bash
+quantdesk doctor                   # can this machine reach live market data?
 quantdesk init --cash 100000 --risk moderate --watchlist NVDA,AMD
-quantdesk run                      # one trading day + report
+quantdesk run --strict             # one trading day + report, real data only
 quantdesk run --email --webhook    # and deliver it
 quantdesk scan --limit 5 -v        # ideas only, no trading
 quantdesk analyze NVDA             # deep dive on one symbol
@@ -187,7 +213,13 @@ quantdesk profiles                 # explain the risk tiers
 ```
 
 Global flags work before or after the subcommand: `--risk`, `--provider`,
-`--offline`, `--home`.
+`--offline`, `--strict`, `--home`.
+
+| Flag | Effect |
+|---|---|
+| `--strict` | Real market data only. Probes the feed and exits 2 if it is dead. |
+| `--offline` | Generated data and placeholder headlines. No network calls. |
+| `--provider yahoo` | Pin one source; no fallback chain. |
 
 ---
 
@@ -219,7 +251,13 @@ Tried in order, falling back automatically:
 3. **Generated data** — so the desk still runs offline
 
 Runs using generated data are labelled `SIMULATED PRICE DATA` in every report
-and on the CLI. Bars are cached to `~/.quantdesk/cache/` for six hours.
+and on the CLI, and `--strict` removes step 3 entirely. Bars are cached to
+`~/.quantdesk/cache/` for six hours; `doctor` reports which source `auto`
+actually resolved to.
+
+If `doctor` shows Yahoo failing, in order: `pip install --upgrade yfinance`
+(the endpoint is undocumented and changes), then check whether a corporate VPN
+or firewall is blocking `finance.yahoo.com`, then try `--provider stooq`.
 
 News comes from Yahoo Finance and Google News RSS.
 
@@ -252,7 +290,7 @@ pip install pytest
 python -m pytest tests/ -q
 ```
 
-84 tests. Indicators are checked against hand-derived values; every candlestick
+90 tests. Indicators are checked against hand-derived values; every candlestick
 detector against a constructed example of its pattern; the trend classifier for
 directional bias on random data; execution semantics for gaps, ties, slippage
 and cash reconciliation; and a walk-forward run that verifies the accounting
