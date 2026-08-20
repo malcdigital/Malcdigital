@@ -75,3 +75,29 @@ def universe_for(risk_profile: str) -> list[str]:
 
 BENCHMARK = "SPY"
 """Used for relative-strength comparison and market-regime gating."""
+
+
+# Liquid inverse ETFs, used to express a bearish view by *buying* rather than
+# selling short. A cash account cannot short at all, and an inverse ETF caps the
+# loss at the amount invested. The cost is tracking error and decay, so these
+# suit swing horizons rather than long holds. Only the deeply liquid ones are
+# listed: thin inverse products have spreads that eat the edge.
+INVERSE_ETF: dict[str, str] = {
+    "SPY": "SH",     # S&P 500
+    "VOO": "SH",
+    "VTI": "SH",
+    "IVV": "SH",
+    "QQQ": "PSQ",    # Nasdaq 100
+    "IWM": "RWM",    # Russell 2000
+    "DIA": "DOG",    # Dow 30
+    "EFA": "EFZ",    # developed ex-US
+    "EEM": "EUM",    # emerging markets
+}
+
+#: The inverse ETFs themselves, so they are never screened as ordinary longs.
+INVERSE_SYMBOLS = set(INVERSE_ETF.values())
+
+
+def inverse_proxy(symbol: str) -> str | None:
+    """Return the inverse ETF that expresses a bearish view on ``symbol``."""
+    return INVERSE_ETF.get(symbol.upper())

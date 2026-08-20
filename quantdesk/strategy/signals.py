@@ -44,6 +44,7 @@ class SignalReport:
     score: float
     setup: str
     trend: TrendState
+    direction: str = "long"
     components: list[Component] = field(default_factory=list)
     patterns: dict = field(default_factory=dict)
     news_score: float = 0.0
@@ -85,10 +86,18 @@ def relative_strength(bars: pd.DataFrame, benchmark: pd.DataFrame, window: int =
     return sym_ret - ben_ret
 
 
-def detect_setup(enriched: pd.DataFrame, trend: TrendState, pattern_summary: dict) -> str:
+def detect_setup(
+    enriched: pd.DataFrame,
+    trend: TrendState,
+    pattern_summary: dict,
+    direction: str = "long",
+) -> str:
     """Classify which kind of trade this is, which decides the entry style."""
     last = enriched.iloc[-1]
     close = float(last["close"])
+
+    if direction == "short":
+        return _detect_short_setup(enriched, trend, pattern_summary)
 
     def f(name: str, default: float = np.nan) -> float:
         v = last.get(name, default)
@@ -117,6 +126,65 @@ def detect_setup(enriched: pd.DataFrame, trend: TrendState, pattern_summary: dic
     if trend.is_bullish:
         return "pullback"
     return "reversal"
+
+
+def _detect_short_setup(
+    enriched: pd.DataFrame, trend: TrendState, pattern_summary: dict
+) -> str:
+    """The mirror of the long setups: breakdowns, failed rallies, reversals."""
+    last = enriched.iloc[-1]
+    close = float(last["close"])
+
+    def f(name: str, default: float = np.nan) -> float:
+        v = last.get(name, default)
+        return float(v) if pd.notna(v) else float("nan")
+
+    dc_lower = f("dc20_lower")
+    ema21 = f("ema21")
+    sma50 = f("sma50")
+    rsi = f("rsi14")
+
+    near_breakdown = np.isfinite(dc_lower) and close <= dc_lower * 1.015
+
+    if trend.is_bearish and near_breakdown:
+        return "breakdown"
+    if (
+        trend.is_bearish
+        and np.isfinite(ema21)
+        and np.isfinite(sma50)
+        and close > ema21 * 0.98
+        and close < sma50
+        and (not np.isfinite(rsi) or rsi > 38)
+    ):
+        # Bounced back up into resistance inside a downtrend - sell the rally.
+        return "rally"
+    if pattern_summary.get("bias") == "bearish" and not trend.is_bearish:
+        return "reversal"
+    if trend.is_bearish:
+        return "rally"
+    return "reversal"
+
+
+def _choose_direction(
+    trend: TrendState, raw: float, profile: RiskProfile, pattern_summary: dict
+) -> str:
+    """Decide whether this candidate is a long or a short idea.
+
+    The trend leads: the desk trades with the tide, never against it. Shorting is
+    only considered when the profile allows it, so a conservative mandate simply
+    never produces one.
+    """
+    if not profile.allow_short:
+        return "long"
+    if trend.is_bearish:
+        return "short"
+    if trend.is_bullish:
+        return "long"
+    # Sideways: let the weight of evidence break the tie, but require a clear
+    # bearish lean before committing to the harder side of the trade.
+    if raw < -0.25 and pattern_summary.get("bias") == "bearish":
+        return "short"
+    return "long"
 
 
 def score_symbol(
@@ -210,9 +278,16 @@ def score_symbol(
 
     total_weight = sum(c.weight for c in components)
     raw = sum(c.contribution for c in components) / total_weight
-    score = float(np.clip(50.0 + raw * 50.0, 0.0, 100.0))
 
-    setup = detect_setup(enriched, trend, pattern_summary)
+    # `raw` is the bullish reading of the evidence, in -1..1. A short is simply
+    # the same evidence read from the other side, so the score inverts rather
+    # than being computed from a separate rulebook. That keeps one scoring
+    # pipeline honest for both directions instead of two that can drift apart.
+    direction = _choose_direction(trend, raw, profile, pattern_summary)
+    directional = raw if direction == "long" else -raw
+    score = float(np.clip(50.0 + directional * 50.0, 0.0, 100.0))
+
+    setup = detect_setup(enriched, trend, pattern_summary, direction)
     levels = find_levels(bars)
     support, resistance = nearest_levels(levels, close)
 
@@ -220,6 +295,10 @@ def score_symbol(
     # These are not penalties. A candidate failing any of them is not traded,
     # regardless of how attractive the rest of the picture looks.
     vetoes: list[str] = []
+    if direction == "short" and not profile.allow_short:
+        vetoes.append(
+            f"the {profile.name} profile does not permit short positions"
+        )
     if asset_type not in profile.allowed_asset_types:
         vetoes.append(f"{asset_type} is outside the {profile.name} mandate")
     if np.isfinite(volatility) and volatility > profile.max_annual_volatility:
@@ -232,10 +311,14 @@ def score_symbol(
             f"average dollar volume ${liquidity / 1e6:.1f}M is below the "
             f"${profile.min_avg_dollar_volume / 1e6:.0f}M liquidity floor"
         )
-    if trend.is_bearish:
+    if direction == "long" and trend.is_bearish:
         vetoes.append("the trend is down - the desk does not buy falling markets")
-    if trend.is_choppy and setup == "breakout":
-        vetoes.append("ADX below 20: breakouts fail in directionless markets")
+    if direction == "short" and trend.is_bullish:
+        vetoes.append("the trend is up - the desk does not short rising markets")
+    if trend.is_choppy and setup in ("breakout", "breakdown"):
+        vetoes.append(
+            f"ADX below 20: {setup}s fail in directionless markets"
+        )
     if score < profile.min_score:
         vetoes.append(
             f"composite score {score:.0f} is below the {profile.min_score:.0f} "
@@ -248,6 +331,7 @@ def score_symbol(
         score=round(score, 2),
         setup=setup,
         trend=trend,
+        direction=direction,
         components=components,
         patterns=pattern_summary,
         news_score=news_score,

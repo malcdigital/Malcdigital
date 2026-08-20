@@ -139,10 +139,34 @@ def test_instructions_name_entry_stop_and_target():
 
 
 # --- scoring ----------------------------------------------------------------
-def test_downtrends_are_vetoed():
-    report = score_symbol("TEST", ramp("down"), get_profile("moderate"))
+def test_downtrends_are_vetoed_for_a_long_only_profile():
+    """Conservative never shorts, so a falling market is simply not tradeable."""
+    report = score_symbol("TEST", ramp("down"), get_profile("conservative"))
+    assert report.direction == "long"
     assert not report.is_actionable
     assert any("trend is down" in v for v in report.vetoes)
+
+
+def test_downtrends_become_short_ideas_when_the_profile_allows_it():
+    report = score_symbol("TEST", ramp("down"), get_profile("moderate"))
+    assert report.direction == "short"
+    assert report.setup in ("breakdown", "rally", "reversal")
+    assert report.is_actionable, report.vetoes
+
+
+def test_uptrends_are_never_shorted():
+    for name in ("conservative", "moderate", "aggressive"):
+        report = score_symbol("TEST", ramp("up"), get_profile(name))
+        assert report.direction == "long", f"{name} tried to short an uptrend"
+
+
+def test_the_same_evidence_scores_inversely_by_direction():
+    """A short is the bullish reading turned over, not a separate rulebook."""
+    long_side = score_symbol("TEST", ramp("up"), get_profile("moderate"))
+    short_side = score_symbol("TEST", ramp("down"), get_profile("moderate"))
+    assert long_side.direction == "long" and short_side.direction == "short"
+    # Both are trading with their trend, so both should read as opportunities.
+    assert long_side.score > 50 and short_side.score > 50
 
 
 def test_score_stays_in_range():

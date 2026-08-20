@@ -27,10 +27,11 @@ class Target:
     take_pct: float
     """Fraction of the position to sell here."""
 
-    def describe(self, shares: int) -> str:
+    def describe(self, shares: int, direction: str = "long") -> str:
         qty = max(1, int(round(shares * self.take_pct)))
+        verb = "Sell" if direction == "long" else "Buy to cover"
         return (
-            f"Sell {qty} share{'s' if qty != 1 else ''} "
+            f"{verb} {qty} share{'s' if qty != 1 else ''} "
             f"({self.take_pct:.0%}) at ${self.price:,.2f} (+{self.r_multiple:.1f}R)"
         )
 
@@ -41,7 +42,7 @@ class TradePlan:
 
     symbol: str
     setup: str
-    entry_style: str          # "buy_stop" | "limit" | "market"
+    entry_style: str          # "buy_stop" | "sell_stop" | "limit" | "market"
     entry_price: float
     entry_condition: str
     stop_price: float
@@ -56,9 +57,20 @@ class TradePlan:
     time_stop_days: int
     invalidation: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    direction: str = "long"
+    proxy_for: str = ""
+    """Set when a bearish view is expressed by buying an inverse ETF: names the
+    symbol the view is actually about."""
+
+    @property
+    def is_short(self) -> bool:
+        return self.direction == "short"
 
     @property
     def per_share_risk(self) -> float:
+        """Distance from entry to stop, always positive."""
+        if self.is_short:
+            return self.stop_price - self.entry_price
         return self.entry_price - self.stop_price
 
     @property
@@ -82,11 +94,25 @@ class TradePlan:
         """Human-readable, step-by-step trade instructions."""
         verb = {
             "buy_stop": f"BUY STOP at ${self.entry_price:,.2f}",
-            "limit": f"BUY LIMIT at ${self.entry_price:,.2f} or better",
-            "market": f"BUY AT MARKET (reference ${self.entry_price:,.2f})",
+            "sell_stop": f"SELL SHORT STOP at ${self.entry_price:,.2f}",
+            "limit": (
+                f"{'SELL SHORT LIMIT' if self.is_short else 'BUY LIMIT'} at "
+                f"${self.entry_price:,.2f} or better"
+            ),
+            "market": (
+                f"{'SELL SHORT' if self.is_short else 'BUY'} AT MARKET "
+                f"(reference ${self.entry_price:,.2f})"
+            ),
         }[self.entry_style]
 
-        lines = [
+        lines = []
+        if self.proxy_for:
+            lines.append(
+                f"0. NOTE - this is a bearish view on {self.proxy_for}, expressed by "
+                f"BUYING the inverse ETF {self.symbol}. You are buying, not shorting; "
+                "loss is capped at the amount invested."
+            )
+        lines += [
             f"1. ENTRY - {verb} for {self.shares} shares "
             f"(${self.position_value:,.0f}, {self.equity_pct:.1f}% of equity).",
             f"   Condition: {self.entry_condition}",
@@ -95,7 +121,7 @@ class TradePlan:
             f"   Why here: {self.stop_reason}",
         ]
         for i, target in enumerate(self.targets, start=3):
-            lines.append(f"{i}. TARGET - {target.describe(self.shares)}")
+            lines.append(f"{i}. TARGET - {target.describe(self.shares, self.direction)}")
         n = len(self.targets) + 3
         lines.append(f"{n}. TRAIL - {self.trail_rule}")
         lines.append(
@@ -124,35 +150,65 @@ def build_trade_plan(
     setup: str,
     support_level: float | None = None,
     resistance_level: float | None = None,
+    direction: str = "long",
+    proxy_for: str = "",
 ) -> TradePlan:
-    """Construct an executable long plan from the current technical picture."""
+    """Construct an executable plan from the current technical picture.
+
+    The geometry mirrors for a short: entry breaks *down* through support rather
+    than up through resistance, the stop sits *above* entry, and targets sit
+    below it. Everything else - ATR-based distances, R multiples, the two sizing
+    caps - is identical, so a short is sized and managed by the same discipline
+    as a long rather than by a separate set of rules.
+    """
     last = enriched.iloc[-1]
     close = float(last["close"])
     high = float(last["high"])
+    low = float(last["low"])
     atr = float(last["atr14"]) if pd.notna(last.get("atr14")) else close * 0.02
     atr = max(atr, close * 0.002)  # guard against a degenerate ATR
+    is_short = direction == "short"
 
     # --- entry --------------------------------------------------------------
-    if setup == "breakout":
-        # Buy strength only once it actually breaks, never in anticipation.
-        dc_upper = float(last.get("dc20_upper", high))
-        trigger = max(dc_upper, high)
-        entry_price = _round_price(trigger + 0.02 * atr)
-        entry_style = "buy_stop"
-        entry_condition = (
-            f"Only if price trades above ${entry_price:,.2f} (the 20-day high). "
-            "If it never triggers, there is no trade - do not chase."
-        )
-    elif setup == "pullback":
-        # Buy weakness inside an established uptrend, near a moving average.
+    if setup in ("breakout", "breakdown"):
+        if is_short:
+            # Sell strength only once support actually breaks, never in anticipation.
+            dc_lower = float(last.get("dc20_lower", low))
+            trigger = min(dc_lower, low)
+            entry_price = _round_price(trigger - 0.02 * atr)
+            entry_style = "sell_stop"
+            entry_condition = (
+                f"Only if price trades below ${entry_price:,.2f} (the 20-day low). "
+                "If it never triggers, there is no trade - do not force it."
+            )
+        else:
+            dc_upper = float(last.get("dc20_upper", high))
+            trigger = max(dc_upper, high)
+            entry_price = _round_price(trigger + 0.02 * atr)
+            entry_style = "buy_stop"
+            entry_condition = (
+                f"Only if price trades above ${entry_price:,.2f} (the 20-day high). "
+                "If it never triggers, there is no trade - do not chase."
+            )
+    elif setup in ("pullback", "rally"):
         ema21 = float(last.get("ema21", close))
-        target_entry = min(close, max(ema21, close - 0.5 * atr))
-        entry_price = _round_price(target_entry)
-        entry_style = "limit"
-        entry_condition = (
-            f"Place a limit order at ${entry_price:,.2f} (near the 21-day EMA). "
-            "Fills on a pullback; if price runs away, skip it."
-        )
+        if is_short:
+            # Sell into a bounce toward the falling 21-day EMA.
+            target_entry = max(close, min(ema21, close + 0.5 * atr))
+            entry_price = _round_price(target_entry)
+            entry_style = "limit"
+            entry_condition = (
+                f"Place a short limit order at ${entry_price:,.2f} (near the 21-day "
+                "EMA). Fills on a bounce; if price keeps falling, skip it."
+            )
+        else:
+            target_entry = min(close, max(ema21, close - 0.5 * atr))
+            entry_price = _round_price(target_entry)
+            entry_style = "limit"
+            entry_condition = (
+                f"Place a limit order at ${entry_price:,.2f} (near the 21-day EMA). "
+                "Fills on a pullback; if price runs away, skip it."
+            )
     else:  # reversal / momentum continuation
         entry_price = _round_price(close)
         entry_style = "market"
@@ -162,29 +218,46 @@ def build_trade_plan(
         )
 
     # --- stop ---------------------------------------------------------------
-    atr_stop = entry_price - profile.atr_stop_mult * atr
-    stop_price = atr_stop
-    stop_reason = (
-        f"{profile.atr_stop_mult:.1f} x ATR (${atr:,.2f}) below entry - far enough "
-        "that ordinary daily noise will not eject you."
-    )
-
-    # Prefer sitting just under real support when that is tighter than the ATR
-    # stop, because a break of support is genuine evidence the idea is wrong.
-    if support_level is not None and support_level < entry_price:
-        structural = support_level - 0.25 * atr
-        if structural > atr_stop:
-            stop_price = structural
-            stop_reason = (
-                f"Just below support at ${support_level:,.2f} - losing that level "
-                "invalidates the setup, and it is tighter than the ATR stop."
-            )
-
-    stop_price = _round_price(min(stop_price, entry_price - 0.05 * atr))
-    per_share_risk = entry_price - stop_price
+    if is_short:
+        atr_stop = entry_price + profile.atr_stop_mult * atr
+        stop_price = atr_stop
+        stop_reason = (
+            f"{profile.atr_stop_mult:.1f} x ATR (${atr:,.2f}) above entry - far "
+            "enough that ordinary daily noise will not eject you."
+        )
+        # Prefer sitting just above real resistance when that is tighter: a break
+        # back above it is genuine evidence the bearish idea is wrong.
+        if resistance_level is not None and resistance_level > entry_price:
+            structural = resistance_level + 0.25 * atr
+            if structural < atr_stop:
+                stop_price = structural
+                stop_reason = (
+                    f"Just above resistance at ${resistance_level:,.2f} - reclaiming "
+                    "that level invalidates the setup, and it is tighter than the "
+                    "ATR stop."
+                )
+        stop_price = _round_price(max(stop_price, entry_price + 0.05 * atr))
+        per_share_risk = stop_price - entry_price
+    else:
+        atr_stop = entry_price - profile.atr_stop_mult * atr
+        stop_price = atr_stop
+        stop_reason = (
+            f"{profile.atr_stop_mult:.1f} x ATR (${atr:,.2f}) below entry - far enough "
+            "that ordinary daily noise will not eject you."
+        )
+        if support_level is not None and support_level < entry_price:
+            structural = support_level - 0.25 * atr
+            if structural > atr_stop:
+                stop_price = structural
+                stop_reason = (
+                    f"Just below support at ${support_level:,.2f} - losing that level "
+                    "invalidates the setup, and it is tighter than the ATR stop."
+                )
+        stop_price = _round_price(min(stop_price, entry_price - 0.05 * atr))
+        per_share_risk = entry_price - stop_price
 
     # --- size ---------------------------------------------------------------
-    shares, sizing_note = profile.size_position(equity, entry_price, stop_price)
+    shares, sizing_note = profile.size_position(equity, entry_price, stop_price, direction)
     position_value = shares * entry_price
     risk_dollars = shares * per_share_risk
 
@@ -197,42 +270,84 @@ def build_trade_plan(
     else:
         take = [1.0 / len(multiples)] * len(multiples)
 
-    targets = [
-        Target(
-            price=_round_price(entry_price + r * per_share_risk),
-            r_multiple=r,
-            take_pct=pct,
+    sign = -1.0 if is_short else 1.0
+    # A short's gain is capped at 100% - price cannot fall below zero - so a wide
+    # stop can push a high-R target to an absurd level (5R on a 15%-wide stop is a
+    # 77% decline). Floor the price so it stays a real number, and say so rather
+    # than quietly printing a fantasy.
+    price_floor = entry_price * 0.05
+    targets = []
+    unrealistic: list[float] = []
+    for r, pct in zip(multiples, take):
+        raw = entry_price + sign * r * per_share_risk
+        price = max(raw, price_floor) if is_short else raw
+        move_pct = abs(price / entry_price - 1.0)
+        if is_short and move_pct > 0.40:
+            unrealistic.append(r)
+        targets.append(
+            Target(price=_round_price(price), r_multiple=r, take_pct=pct)
         )
-        for r, pct in zip(multiples, take)
-    ]
 
     notes: list[str] = []
-    if resistance_level is not None and targets:
+    if unrealistic:
+        listed = ", ".join(f"{r:g}R" for r in unrealistic)
+        notes.append(
+            f"The {listed} target implies a decline of more than 40%. That is a rare "
+            "outcome for a swing trade - treat the trailing stop, not the far target, "
+            "as the realistic exit."
+        )
+    if targets:
         first = targets[0]
-        if resistance_level < first.price:
+        if is_short and support_level is not None and support_level > first.price:
+            notes.append(
+                f"Support at ${support_level:,.2f} sits above the first target "
+                f"(${first.price:,.2f}); expect the decline to stall there and "
+                "consider covering the first tranche early."
+            )
+        elif not is_short and resistance_level is not None and resistance_level < first.price:
             notes.append(
                 f"Overhead resistance at ${resistance_level:,.2f} sits below the first "
                 f"target (${first.price:,.2f}); expect the advance to stall there and "
                 "consider taking the first tranche early."
             )
+    if is_short and not proxy_for:
+        notes.append(
+            "Short position: losses are theoretically unlimited, borrow may be "
+            "recalled, and a squeeze can gap price through your stop. The stop is "
+            "not a guarantee."
+        )
 
     # --- exits --------------------------------------------------------------
+    trail_trigger = _round_price(
+        entry_price + sign * profile.trail_after_r * per_share_risk
+    )
     trail_rule = (
-        f"Once the trade is up {profile.trail_after_r:.2f}R "
-        f"(${_round_price(entry_price + profile.trail_after_r * per_share_risk):,.2f}), "
+        f"Once the trade is up {profile.trail_after_r:.2f}R (${trail_trigger:,.2f}), "
         f"move the stop to breakeven, then trail it {profile.trail_atr_mult:.2f} x ATR "
-        "below the highest close reached. Never move a stop away from price."
+        f"{'above the lowest close' if is_short else 'below the highest close'} "
+        "reached. Never move a stop away from price."
     )
 
-    invalidation = [
-        "a daily close back below the 50-day moving average",
-        "a daily close below the stop level (exit on the close, do not wait)",
-    ]
-    if setup == "breakout":
-        invalidation.append(
-            "price falls back inside the breakout range within two sessions "
-            "(a failed breakout)"
-        )
+    if is_short:
+        invalidation = [
+            "a daily close back above the 50-day moving average",
+            "a daily close above the stop level (cover on the close, do not wait)",
+        ]
+        if setup == "breakdown":
+            invalidation.append(
+                "price recovers back inside the breakdown range within two sessions "
+                "(a failed breakdown)"
+            )
+    else:
+        invalidation = [
+            "a daily close back below the 50-day moving average",
+            "a daily close below the stop level (exit on the close, do not wait)",
+        ]
+        if setup == "breakout":
+            invalidation.append(
+                "price falls back inside the breakout range within two sessions "
+                "(a failed breakout)"
+            )
     if trend_state is not None and getattr(trend_state, "is_choppy", False):
         invalidation.append("ADX stays below 20 - the move lacks conviction")
 
@@ -254,4 +369,6 @@ def build_trade_plan(
         time_stop_days=profile.max_hold_days,
         invalidation=invalidation,
         notes=notes,
+        direction=direction,
+        proxy_for=proxy_for,
     )
