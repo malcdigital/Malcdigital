@@ -102,6 +102,7 @@ class Recommender:
         self.news_fetcher = news_fetcher or NewsFetcher()
         self.analyzer = SentimentAnalyzer()
         self.max_workers = max_workers
+        self.last_screen = None
 
     def scan(
         self,
@@ -111,9 +112,12 @@ class Recommender:
         exclude: set[str] | None = None,
     ) -> ScanResult:
         exclude = {s.upper() for s in (exclude or set())}
-        candidates = symbols or (
-            universe_for(self.profile.name) + list(self.settings.watchlist)
-        )
+        if symbols:
+            candidates = list(symbols)
+        elif self.settings.universe == "wide":
+            candidates = self._wide_universe()
+        else:
+            candidates = universe_for(self.profile.name) + list(self.settings.watchlist)
         # Inverse ETFs are never scanned as ordinary longs: they decay structurally,
         # so their own charts rarely show a clean uptrend even when they are exactly
         # the right instrument. They are reached only by substitution below.
@@ -179,6 +183,7 @@ class Recommender:
                 sector_bias=(
                     sectors.bias_for(instrument.sector) if sectors else 0.0
                 ),
+                multi_timeframe=self.settings.multi_timeframe,
             )
             return report, instrument, bars, synthetic_news
 
@@ -201,9 +206,37 @@ class Recommender:
 
         passing.sort(key=lambda t: -t[0].score)
         result.recommendations = self._diversify(
-            passing, equity, limit, exclude, regime
+            passing, equity, limit, exclude,
+            regime if self.settings.use_regime_filter else None,
         )
         return result
+
+    def _wide_universe(self) -> list[str]:
+        """Screen a wide symbol list down to a tractable candidate set.
+
+        The screen is cheap column arithmetic, so most of the list is discarded
+        before any indicator or pattern work is paid for.
+        """
+        from pathlib import Path
+
+        from quantdesk.strategy.screener import ScreenCriteria, Screener, load_symbols
+
+        path = self.settings.symbols_file or (
+            Path(__file__).resolve().parents[1] / "data" / "symbols.txt"
+        )
+        try:
+            symbols = load_symbols(path)
+        except FileNotFoundError:
+            return universe_for(self.profile.name) + list(self.settings.watchlist)
+
+        criteria = ScreenCriteria(
+            min_dollar_volume=self.profile.min_avg_dollar_volume,
+            max_annual_volatility=self.profile.max_annual_volatility,
+            exclude_symbols=set(INVERSE_SYMBOLS),
+        )
+        screener = Screener(self.provider, criteria)
+        self.last_screen = screener.screen(symbols)
+        return self.last_screen.passed + list(self.settings.watchlist)
 
     def _diversify(self, passing, equity: float, limit: int,
                    already_held: set[str] | None = None,

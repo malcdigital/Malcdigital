@@ -25,6 +25,9 @@ quantdesk = "quantdesk.cli:main"
 [tool.setuptools.packages.find]
 include = ["quantdesk*"]
 
+[tool.setuptools.package-data]
+quantdesk = ["data/*.txt"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 filterwarnings = ["ignore::DeprecationWarning"]

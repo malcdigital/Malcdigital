@@ -243,6 +243,18 @@ class Settings:
     watchlist: list[str] = field(default_factory=list)
     """Extra symbols to consider on top of the risk-tier universe."""
 
+    universe: str = "curated"
+    """curated (the risk-tier list) | wide (screen the bundled symbol file)."""
+
+    symbols_file: str = ""
+    """Path to a newline-separated symbol list. Empty uses the bundled file."""
+
+    multi_timeframe: bool = True
+    """Require the weekly trend to agree before taking a daily entry."""
+
+    use_regime_filter: bool = True
+    """Scale exposure to the broad market regime."""
+
     commission_per_share: float = 0.0
     slippage_bps: float = 5.0
     """Simulated slippage in basis points applied against you on every fill."""
