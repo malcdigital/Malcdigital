@@ -5,6 +5,9 @@ around a stock, ranks ideas against your chosen risk level, tells you exactly
 when to get in and out, and then trades them with play money and reports back
 every day.
 
+It trades both directions, scales exposure to the market regime, and comes with
+a local dashboard where you can see the charts and approve each trade yourself.
+
 > **Play money only.** No real orders, no real account. Read
 > [DISCLAIMER.md](DISCLAIMER.md) before you do anything else.
 
@@ -19,6 +22,7 @@ pip install -r requirements.txt
 python -m quantdesk.cli doctor                                  # confirm live data works
 python -m quantdesk.cli init --cash 100000 --risk moderate
 python -m quantdesk.cli run --strict                            # real market data only
+python -m quantdesk.cli serve                                   # dashboard at localhost:8000
 ```
 
 **Always run `doctor` first.** The desk is built to keep working when the
@@ -173,6 +177,131 @@ page (`latest.html`) that works in light and dark mode.
 
 ---
 
+## The dashboard
+
+```bash
+quantdesk serve                 # http://localhost:8000
+quantdesk serve --manual        # queue ideas for your approval
+quantdesk serve --host 0.0.0.0  # reach it from your phone (read the warning)
+```
+
+Four pages: an overview with the equity curve and open risk, an ideas queue, your
+positions, and the trade history. Each symbol has its own page with a candlestick
+chart, moving averages, support and resistance, and every detected pattern marked
+on the bar it occurred on.
+
+Charts are server-rendered SVG. There is no CDN and no JavaScript, so the
+dashboard works with your machine offline — which matters, because that is
+exactly when the desk still runs but a charting bundle would not load.
+
+**It has no authentication.** Bound to localhost that is fine. `--host 0.0.0.0`
+makes it reachable from your phone on the same Wi-Fi, and from everyone else on
+that network too — anyone who can reach the port can approve trades. Trusted
+networks only.
+
+## Deciding trades yourself
+
+Set `execution_mode` to `manual` (or pass `--manual`) and nothing reaches the
+broker until you approve it. Each idea shows the chart, the reasoning and the
+full plan, then waits:
+
+```
+NVDA   LONG                                    78/100
+breakout · 153 shares · risk $750 · reward:risk 3.0:1
+
+1. ENTRY - BUY STOP at $61.74 for 153 shares...
+2. STOP LOSS - place immediately at $56.84...
+
+        [ Approve ]        [ Skip ]
+```
+
+A proposal freezes the whole plan rather than pointing at one, so approving
+tomorrow acts on exactly what you reviewed today. Approving twice places one
+order, not two. Ideas expire after three days, because a stale setup is not the
+setup any more.
+
+From the terminal instead:
+
+```bash
+quantdesk approve --list
+quantdesk approve --approve 3 --reject 5
+```
+
+## Trading both directions
+
+The desk was long-only at first, which meant sitting in cash through every
+downtrend — roughly half of market conditions. It now takes the short side too.
+
+Scoring picks a direction from the trend, then reads the same evidence from that
+side: a short's score is the bullish reading inverted, not a second rulebook that
+could drift out of step. Entry, stop, targets and the trailing stop all mirror.
+
+Shorts are treated as more dangerous, because they are:
+
+| | Long | Short |
+|---|---|---|
+| Risk budget | full | 55–75% of it |
+| Concurrent positions | up to 12 | 2–5 |
+| Loss if it goes wrong | capped at the position | theoretically unlimited |
+
+Conservative never shorts at all. Where a profile prefers it, a bearish view on
+an index is expressed by **buying a liquid inverse ETF** (SPY → SH, QQQ → PSQ)
+— something a cash account can actually hold, with the loss capped at what you
+put in.
+
+## Market regime and sector rotation
+
+Grading signals in isolation is how a book ends up fully invested at a top: every
+name still looks fine on its own chart while the market underneath them rolls
+over.
+
+The benchmark's own regime — 200- and 50-day averages, trend slope, drawdown from
+the high, realised volatility — scales position sizing:
+
+| Regime | Long exposure | Short exposure |
+|---|---|---|
+| Bull | 100% | 25% |
+| Correction | 55% | 75% |
+| Bear | 20% | 100% |
+
+Scaled, not switched. A binary gate whipsaws around the 200-day line; scaling
+steps risk down as conditions deteriorate without betting everything on one
+close.
+
+Sectors are ranked by relative strength and fed in as a scoring component, so a
+decent name in the weakest sector is penalised rather than treated as equal to
+one in the strongest.
+
+## Multi-timeframe confirmation
+
+A daily chart prints a clean breakout about as often in a market grinding lower
+on the weekly as in one genuinely advancing. A conflicting weekly trend now
+**vetoes** the trade rather than merely docking its score.
+
+The cost is real: fewer trades, and slightly later entries, because a weekly bar
+confirms after the daily one. Turn it off with `multi_timeframe: false`.
+
+Thin history is neutral, never a rejection — otherwise absence of evidence reads
+as evidence against and every recently listed name is permanently untradeable.
+
+## Screening the wider market
+
+The curated list is fast but structurally blind: it can only surface names
+someone thought to list.
+
+```json
+{"universe": "wide", "symbols_file": "/path/to/my-symbols.txt"}
+```
+
+Screening is staged. A cheap pass on price, dollar volume, history depth and
+volatility rejects most candidates using column arithmetic alone, before any
+indicator or pattern work is paid for — on the bundled list, 396 symbols screened
+in about 3 seconds, of which ~319 survive to full analysis.
+
+A hand-checked list of ~396 liquid US listings ships as a starting point, not a
+claim to be the whole market. Point `--symbols-file` at your own list to replace
+it; a CSV export works, since the first field is used.
+
 ## Risk levels
 
 ```bash
@@ -190,6 +319,10 @@ python -m quantdesk.cli profiles
 | Max hold | 120 days | 60 days | 30 days |
 | Volatility ceiling | 35% | 55% | 95% |
 | ETF share of book | 70% | 45% | 25% |
+| Shorting | never | yes | yes |
+| Max shorts | – | 3 | 5 |
+| Short risk budget | – | 55% | 75% |
+| Bearish view via | inverse ETF | inverse ETF | direct short |
 
 "Risk per trade" is the fraction of equity you lose if the stop is hit — the
 number that actually determines position size.
@@ -202,6 +335,8 @@ number that actually determines position size.
 quantdesk doctor                   # can this machine reach live market data?
 quantdesk init --cash 100000 --risk moderate --watchlist NVDA,AMD
 quantdesk run --strict             # one trading day + report, real data only
+quantdesk serve                    # dashboard with charts at localhost:8000
+quantdesk approve --list           # review queued ideas in the terminal
 quantdesk run --email --webhook    # and deliver it
 quantdesk scan --limit 5 -v        # ideas only, no trading
 quantdesk analyze NVDA             # deep dive on one symbol
@@ -220,6 +355,7 @@ Global flags work before or after the subcommand: `--risk`, `--provider`,
 | `--strict` | Real market data only. Probes the feed and exits 2 if it is dead. |
 | `--offline` | Generated data and placeholder headlines. No network calls. |
 | `--provider yahoo` | Pin one source; no fallback chain. |
+| `--manual` | Queue ideas for approval instead of placing them (`serve`). |
 
 ---
 
@@ -290,11 +426,16 @@ pip install pytest
 python -m pytest tests/ -q
 ```
 
-90 tests. Indicators are checked against hand-derived values; every candlestick
-detector against a constructed example of its pattern; the trend classifier for
-directional bias on random data; execution semantics for gaps, ties, slippage
-and cash reconciliation; and a walk-forward run that verifies the accounting
-invariants hold over many sessions without look-ahead.
+160 tests, green on Python 3.10–3.13 and on the oldest supported dependencies.
+
+Indicators are checked against hand-derived values; every candlestick detector
+against a constructed example of its pattern; the trend classifier for
+directional bias across random-walk seeds; execution semantics for gaps,
+stop-vs-target ties, slippage direction and exact cash reconciliation in both
+directions; charts against an all-NaN overlay, since a NaN in an SVG attribute
+silently drops the shape rather than erroring; the approval path driven over
+real HTTP; and a walk-forward run verifying the accounting invariants hold over
+many sessions without look-ahead.
 
 ---
 
@@ -305,20 +446,22 @@ quantdesk/
   config.py            risk profiles and settings
   engine.py            the daily cycle
   cli.py               command line interface
+  diagnostics.py       preflight checks
   notify.py            email / webhook delivery
-  data/                providers (Yahoo, Stooq, synthetic), cache, fallback
-  analysis/            indicators, candlestick patterns, trend and levels
+  data/                providers (Yahoo, Stooq, synthetic), cache, symbol list
+  analysis/            indicators, candlestick patterns, trend, weekly timeframe
   news/                RSS retrieval, financial sentiment
-  strategy/            universes, scoring, risk sizing, trade plans
+  strategy/            universes, screener, regime, scoring, risk, trade plans
   broker/              paper simulator, optional Alpaca adapter
   portfolio/           SQLite store, performance metrics, reports
+  web/                 dashboard server, pages, SVG charts
 ```
 
 ---
 
 ## Honest limits
 
-- **Long only.** No shorting, options or futures.
+- **No options or futures.** Equities and ETFs only.
 - **Daily bars.** Nothing intraday, so same-bar sequencing is assumed, not known.
 - **Sentiment is a lexicon,** not a language model. It cannot tell whether news
   is already priced in.
