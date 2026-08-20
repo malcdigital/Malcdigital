@@ -236,6 +236,14 @@ class Settings:
     broker: str = "paper"
     """paper (built-in simulator) | alpaca (Alpaca paper account)."""
 
+    execution_mode: str = "auto"
+    """auto - ideas are placed as working orders immediately.
+    manual - ideas are queued for approval and nothing reaches the broker
+    until a human approves them."""
+
+    proposal_lifetime_days: int = 3
+    """How long a queued idea stays reviewable before the setup goes stale."""
+
     news_enabled: bool = True
     news_lookback_days: int = 7
     max_news_per_symbol: int = 25

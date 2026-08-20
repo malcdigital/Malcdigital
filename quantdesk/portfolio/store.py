@@ -84,6 +84,30 @@ CREATE TABLE IF NOT EXISTS orders (
     proxy_for TEXT NOT NULL DEFAULT ''
 );
 
+CREATE TABLE IF NOT EXISTS proposals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol TEXT NOT NULL,
+    direction TEXT NOT NULL DEFAULT 'long',
+    proxy_for TEXT NOT NULL DEFAULT '',
+    setup TEXT NOT NULL,
+    entry_style TEXT NOT NULL,
+    entry_price REAL NOT NULL,
+    stop_price REAL NOT NULL,
+    targets TEXT NOT NULL,
+    shares INTEGER NOT NULL,
+    risk_dollars REAL NOT NULL DEFAULT 0,
+    position_value REAL NOT NULL DEFAULT 0,
+    score REAL NOT NULL DEFAULT 0,
+    time_stop_days INTEGER NOT NULL DEFAULT 60,
+    rationale TEXT NOT NULL DEFAULT '',
+    instructions TEXT NOT NULL DEFAULT '',
+    created_date TEXT NOT NULL,
+    expires_date TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    decided_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_proposals_status ON proposals(status);
 CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
 CREATE INDEX IF NOT EXISTS idx_positions_status ON positions(status);
 CREATE INDEX IF NOT EXISTS idx_trades_symbol ON trades(symbol);
@@ -183,6 +207,55 @@ class Order:
     direction: str = "long"
     proxy_for: str = ""
     id: int | None = None
+
+
+@dataclass
+class Proposal:
+    """A trade idea awaiting a human decision.
+
+    In manual mode nothing reaches the broker until someone approves it. The
+    whole plan is stored, not a reference to one, so a decision made tomorrow
+    acts on exactly what was reviewed rather than on a silently re-derived idea.
+    """
+
+    symbol: str
+    direction: str
+    setup: str
+    entry_style: str
+    entry_price: float
+    stop_price: float
+    targets: list[tuple[float, float]]
+    shares: int
+    risk_dollars: float = 0.0
+    position_value: float = 0.0
+    score: float = 0.0
+    time_stop_days: int = 60
+    rationale: str = ""
+    instructions: str = ""
+    proxy_for: str = ""
+    created_date: date = field(default_factory=date.today)
+    expires_date: date = field(default_factory=date.today)
+    status: str = "pending"      # pending | approved | rejected | expired
+    decided_at: str | None = None
+    id: int | None = None
+
+    @property
+    def is_short(self) -> bool:
+        return self.direction == "short"
+
+    @property
+    def instruction_lines(self) -> list[str]:
+        return [line for line in self.instructions.split("\n") if line]
+
+    @property
+    def reward_risk(self) -> float:
+        risk = abs(self.entry_price - self.stop_price)
+        if risk <= 0 or not self.targets:
+            return 0.0
+        return sum(
+            abs(price - self.entry_price) / risk * fraction
+            for price, fraction in self.targets
+        )
 
 
 @dataclass
@@ -486,6 +559,87 @@ class PortfolioStore:
         with self._connect() as conn:
             cur = conn.execute(
                 "UPDATE orders SET status='cancelled' WHERE status='pending'"
+            )
+            return cur.rowcount
+
+    # --- proposals ----------------------------------------------------------
+    def add_proposal(self, proposal: Proposal) -> int:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "INSERT INTO proposals(symbol, direction, proxy_for, setup, "
+                "entry_style, entry_price, stop_price, targets, shares, "
+                "risk_dollars, position_value, score, time_stop_days, rationale, "
+                "instructions, created_date, expires_date, status) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    proposal.symbol.upper(), proposal.direction, proposal.proxy_for,
+                    proposal.setup, proposal.entry_style, proposal.entry_price,
+                    proposal.stop_price, _encode_targets(proposal.targets),
+                    proposal.shares, proposal.risk_dollars, proposal.position_value,
+                    proposal.score, proposal.time_stop_days, proposal.rationale,
+                    proposal.instructions, _iso(proposal.created_date),
+                    _iso(proposal.expires_date), proposal.status,
+                ),
+            )
+            return int(cur.lastrowid)
+
+    @staticmethod
+    def _row_to_proposal(row: sqlite3.Row) -> Proposal:
+        return Proposal(
+            id=row["id"], symbol=row["symbol"], direction=row["direction"],
+            proxy_for=row["proxy_for"] or "", setup=row["setup"],
+            entry_style=row["entry_style"], entry_price=row["entry_price"],
+            stop_price=row["stop_price"], targets=_decode_targets(row["targets"]),
+            shares=row["shares"], risk_dollars=row["risk_dollars"],
+            position_value=row["position_value"], score=row["score"],
+            time_stop_days=row["time_stop_days"], rationale=row["rationale"] or "",
+            instructions=row["instructions"] or "",
+            created_date=_to_date(row["created_date"]),
+            expires_date=_to_date(row["expires_date"]),
+            status=row["status"], decided_at=row["decided_at"],
+        )
+
+    def proposals(self, status: str = "pending", limit: int = 100) -> list[Proposal]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM proposals WHERE status = ? "
+                "ORDER BY score DESC, id DESC LIMIT ?",
+                (status, limit),
+            ).fetchall()
+        return [self._row_to_proposal(r) for r in rows]
+
+    def get_proposal(self, proposal_id: int) -> Proposal | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM proposals WHERE id = ?", (proposal_id,)
+            ).fetchone()
+        return self._row_to_proposal(row) if row else None
+
+    def decide_proposal(self, proposal_id: int, status: str) -> Proposal | None:
+        """Record a decision. Returns the proposal, or None if it was not pending.
+
+        The pending check is part of the UPDATE rather than a separate read, so
+        two clicks on the same card cannot both take effect.
+        """
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE proposals SET status = ?, decided_at = ? "
+                "WHERE id = ? AND status = 'pending'",
+                (status, _iso(datetime.now()), proposal_id),
+            )
+            if cur.rowcount == 0:
+                return None
+            row = conn.execute(
+                "SELECT * FROM proposals WHERE id = ?", (proposal_id,)
+            ).fetchone()
+        return self._row_to_proposal(row) if row else None
+
+    def expire_proposals(self, as_of: date) -> int:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE proposals SET status = 'expired' "
+                "WHERE status = 'pending' AND expires_date < ?",
+                (_iso(as_of),),
             )
             return cur.rowcount
 
