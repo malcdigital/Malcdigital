@@ -5,7 +5,10 @@ from quantdesk.portfolio.store import (
     Portfolio,
     PortfolioStore,
     Position,
+    Proposal,
     Trade,
 )
 
-__all__ = ["Order", "Portfolio", "PortfolioStore", "Position", "Trade"]
+__all__ = [
+    "Order", "Portfolio", "PortfolioStore", "Position", "Proposal", "Trade",
+]

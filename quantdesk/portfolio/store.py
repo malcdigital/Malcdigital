@@ -37,7 +37,10 @@ CREATE TABLE IF NOT EXISTS positions (
     highest_close REAL NOT NULL DEFAULT 0,
     time_stop_days INTEGER NOT NULL DEFAULT 60,
     status TEXT NOT NULL DEFAULT 'open',
-    notes TEXT
+    notes TEXT,
+    direction TEXT NOT NULL DEFAULT 'long',
+    lowest_close REAL NOT NULL DEFAULT 0,
+    proxy_for TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS trades (
@@ -76,9 +79,35 @@ CREATE TABLE IF NOT EXISTS orders (
     created_date TEXT NOT NULL,
     expires_date TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending',
-    note TEXT
+    note TEXT,
+    direction TEXT NOT NULL DEFAULT 'long',
+    proxy_for TEXT NOT NULL DEFAULT ''
 );
 
+CREATE TABLE IF NOT EXISTS proposals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol TEXT NOT NULL,
+    direction TEXT NOT NULL DEFAULT 'long',
+    proxy_for TEXT NOT NULL DEFAULT '',
+    setup TEXT NOT NULL,
+    entry_style TEXT NOT NULL,
+    entry_price REAL NOT NULL,
+    stop_price REAL NOT NULL,
+    targets TEXT NOT NULL,
+    shares INTEGER NOT NULL,
+    risk_dollars REAL NOT NULL DEFAULT 0,
+    position_value REAL NOT NULL DEFAULT 0,
+    score REAL NOT NULL DEFAULT 0,
+    time_stop_days INTEGER NOT NULL DEFAULT 60,
+    rationale TEXT NOT NULL DEFAULT '',
+    instructions TEXT NOT NULL DEFAULT '',
+    created_date TEXT NOT NULL,
+    expires_date TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    decided_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_proposals_status ON proposals(status);
 CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
 CREATE INDEX IF NOT EXISTS idx_positions_status ON positions(status);
 CREATE INDEX IF NOT EXISTS idx_trades_symbol ON trades(symbol);
@@ -102,24 +131,45 @@ class Position:
     id: int | None = None
     status: str = "open"
     notes: str = ""
+    direction: str = "long"
+    lowest_close: float = 0.0
+    proxy_for: str = ""
+
+    @property
+    def is_short(self) -> bool:
+        return self.direction == "short"
 
     @property
     def cost_basis(self) -> float:
         return self.shares * self.entry_price
 
     def market_value(self, price: float) -> float:
+        """Current value of the holding.
+
+        For a short this is the cost to buy the shares back. It is reported
+        positive so equity arithmetic stays uniform; the profit or loss lives in
+        :meth:`unrealized_pnl`.
+        """
         return self.shares * price
 
     def unrealized_pnl(self, price: float) -> float:
+        if self.is_short:
+            return (self.entry_price - price) * self.shares
         return (price - self.entry_price) * self.shares
 
     def unrealized_pct(self, price: float) -> float:
         if self.entry_price <= 0:
             return 0.0
-        return (price / self.entry_price - 1.0) * 100.0
+        change = price / self.entry_price - 1.0
+        return (-change if self.is_short else change) * 100.0
 
     def r_multiple(self, price: float) -> float:
         """Open profit expressed in multiples of the original risk."""
+        if self.is_short:
+            risk_per_share = self.initial_stop - self.entry_price
+            if risk_per_share <= 0:
+                return 0.0
+            return (self.entry_price - price) / risk_per_share
         risk_per_share = self.entry_price - self.initial_stop
         if risk_per_share <= 0:
             return 0.0
@@ -154,7 +204,58 @@ class Order:
     expires_date: date = field(default_factory=date.today)
     status: str = "pending"
     note: str = ""
+    direction: str = "long"
+    proxy_for: str = ""
     id: int | None = None
+
+
+@dataclass
+class Proposal:
+    """A trade idea awaiting a human decision.
+
+    In manual mode nothing reaches the broker until someone approves it. The
+    whole plan is stored, not a reference to one, so a decision made tomorrow
+    acts on exactly what was reviewed rather than on a silently re-derived idea.
+    """
+
+    symbol: str
+    direction: str
+    setup: str
+    entry_style: str
+    entry_price: float
+    stop_price: float
+    targets: list[tuple[float, float]]
+    shares: int
+    risk_dollars: float = 0.0
+    position_value: float = 0.0
+    score: float = 0.0
+    time_stop_days: int = 60
+    rationale: str = ""
+    instructions: str = ""
+    proxy_for: str = ""
+    created_date: date = field(default_factory=date.today)
+    expires_date: date = field(default_factory=date.today)
+    status: str = "pending"      # pending | approved | rejected | expired
+    decided_at: str | None = None
+    id: int | None = None
+
+    @property
+    def is_short(self) -> bool:
+        return self.direction == "short"
+
+    @property
+    def instruction_lines(self) -> list[str]:
+        return [line for line in self.instructions.split("\n") if line]
+
+    @property
+    def reward_risk(self) -> float:
+        risk = abs(self.entry_price - self.stop_price)
+        if risk <= 0 or not self.targets:
+            return 0.0
+        return sum(
+            abs(price - self.entry_price) / risk * fraction
+            for price, fraction in self.targets
+        )
 
 
 @dataclass
@@ -182,10 +283,31 @@ class Portfolio:
     starting_cash: float = 0.0
 
     def positions_value(self, prices: dict[str, float]) -> float:
-        return sum(p.market_value(prices.get(p.symbol, p.entry_price)) for p in self.positions)
+        """Marked value of the book.
+
+        A short contributes its margin (held out of cash at entry) plus whatever
+        profit or loss it currently carries, so equity moves with the position
+        exactly as a long's does.
+        """
+        total = 0.0
+        for p in self.positions:
+            price = prices.get(p.symbol, p.entry_price)
+            if p.is_short:
+                total += p.cost_basis + p.unrealized_pnl(price)
+            else:
+                total += p.market_value(price)
+        return total
 
     def total_equity(self, prices: dict[str, float]) -> float:
         return self.cash + self.positions_value(prices)
+
+    @property
+    def shorts(self) -> list["Position"]:
+        return [p for p in self.positions if p.is_short]
+
+    @property
+    def longs(self) -> list["Position"]:
+        return [p for p in self.positions if not p.is_short]
 
     def position_for(self, symbol: str) -> Position | None:
         for p in self.positions:
@@ -310,6 +432,9 @@ class PortfolioStore:
             time_stop_days=row["time_stop_days"],
             status=row["status"],
             notes=row["notes"] or "",
+            direction=row["direction"] or "long",
+            lowest_close=row["lowest_close"],
+            proxy_for=row["proxy_for"] or "",
         )
 
     def add_position(self, position: Position) -> int:
@@ -317,14 +442,16 @@ class PortfolioStore:
             cur = conn.execute(
                 "INSERT INTO positions(symbol, shares, entry_price, entry_date, "
                 "stop_price, initial_stop, targets, setup, risk_dollars, "
-                "highest_close, time_stop_days, status, notes) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "highest_close, time_stop_days, status, notes, direction, "
+                "lowest_close, proxy_for) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     position.symbol.upper(), position.shares, position.entry_price,
                     _iso(position.entry_date), position.stop_price, position.initial_stop,
                     _encode_targets(position.targets), position.setup,
                     position.risk_dollars, position.highest_close,
                     position.time_stop_days, position.status, position.notes,
+                    position.direction, position.lowest_close, position.proxy_for,
                 ),
             )
             return int(cur.lastrowid)
@@ -335,11 +462,12 @@ class PortfolioStore:
         with self._connect() as conn:
             conn.execute(
                 "UPDATE positions SET shares=?, stop_price=?, targets=?, "
-                "highest_close=?, status=?, notes=? WHERE id=?",
+                "highest_close=?, lowest_close=?, status=?, notes=? WHERE id=?",
                 (
                     position.shares, position.stop_price,
                     _encode_targets(position.targets), position.highest_close,
-                    position.status, position.notes, position.id,
+                    position.lowest_close, position.status, position.notes,
+                    position.id,
                 ),
             )
 
@@ -391,13 +519,14 @@ class PortfolioStore:
             cur = conn.execute(
                 "INSERT INTO orders(symbol, side, order_type, shares, trigger_price, "
                 "stop_loss, targets, setup, risk_dollars, time_stop_days, "
-                "created_date, expires_date, status, note) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "created_date, expires_date, status, note, direction, proxy_for) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     order.symbol.upper(), order.side, order.order_type, order.shares,
                     order.trigger_price, order.stop_loss, _encode_targets(order.targets),
                     order.setup, order.risk_dollars, order.time_stop_days,
                     _iso(order.created_date), _iso(order.expires_date),
-                    order.status, order.note,
+                    order.status, order.note, order.direction, order.proxy_for,
                 ),
             )
             return int(cur.lastrowid)
@@ -417,6 +546,7 @@ class PortfolioStore:
                 created_date=_to_date(r["created_date"]),
                 expires_date=_to_date(r["expires_date"]),
                 status=r["status"], note=r["note"] or "",
+                direction=r["direction"] or "long", proxy_for=r["proxy_for"] or "",
             )
             for r in rows
         ]
@@ -429,6 +559,87 @@ class PortfolioStore:
         with self._connect() as conn:
             cur = conn.execute(
                 "UPDATE orders SET status='cancelled' WHERE status='pending'"
+            )
+            return cur.rowcount
+
+    # --- proposals ----------------------------------------------------------
+    def add_proposal(self, proposal: Proposal) -> int:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "INSERT INTO proposals(symbol, direction, proxy_for, setup, "
+                "entry_style, entry_price, stop_price, targets, shares, "
+                "risk_dollars, position_value, score, time_stop_days, rationale, "
+                "instructions, created_date, expires_date, status) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    proposal.symbol.upper(), proposal.direction, proposal.proxy_for,
+                    proposal.setup, proposal.entry_style, proposal.entry_price,
+                    proposal.stop_price, _encode_targets(proposal.targets),
+                    proposal.shares, proposal.risk_dollars, proposal.position_value,
+                    proposal.score, proposal.time_stop_days, proposal.rationale,
+                    proposal.instructions, _iso(proposal.created_date),
+                    _iso(proposal.expires_date), proposal.status,
+                ),
+            )
+            return int(cur.lastrowid)
+
+    @staticmethod
+    def _row_to_proposal(row: sqlite3.Row) -> Proposal:
+        return Proposal(
+            id=row["id"], symbol=row["symbol"], direction=row["direction"],
+            proxy_for=row["proxy_for"] or "", setup=row["setup"],
+            entry_style=row["entry_style"], entry_price=row["entry_price"],
+            stop_price=row["stop_price"], targets=_decode_targets(row["targets"]),
+            shares=row["shares"], risk_dollars=row["risk_dollars"],
+            position_value=row["position_value"], score=row["score"],
+            time_stop_days=row["time_stop_days"], rationale=row["rationale"] or "",
+            instructions=row["instructions"] or "",
+            created_date=_to_date(row["created_date"]),
+            expires_date=_to_date(row["expires_date"]),
+            status=row["status"], decided_at=row["decided_at"],
+        )
+
+    def proposals(self, status: str = "pending", limit: int = 100) -> list[Proposal]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM proposals WHERE status = ? "
+                "ORDER BY score DESC, id DESC LIMIT ?",
+                (status, limit),
+            ).fetchall()
+        return [self._row_to_proposal(r) for r in rows]
+
+    def get_proposal(self, proposal_id: int) -> Proposal | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM proposals WHERE id = ?", (proposal_id,)
+            ).fetchone()
+        return self._row_to_proposal(row) if row else None
+
+    def decide_proposal(self, proposal_id: int, status: str) -> Proposal | None:
+        """Record a decision. Returns the proposal, or None if it was not pending.
+
+        The pending check is part of the UPDATE rather than a separate read, so
+        two clicks on the same card cannot both take effect.
+        """
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE proposals SET status = ?, decided_at = ? "
+                "WHERE id = ? AND status = 'pending'",
+                (status, _iso(datetime.now()), proposal_id),
+            )
+            if cur.rowcount == 0:
+                return None
+            row = conn.execute(
+                "SELECT * FROM proposals WHERE id = ?", (proposal_id,)
+            ).fetchone()
+        return self._row_to_proposal(row) if row else None
+
+    def expire_proposals(self, as_of: date) -> int:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE proposals SET status = 'expired' "
+                "WHERE status = 'pending' AND expires_date < ?",
+                (_iso(as_of),),
             )
             return cur.rowcount
 

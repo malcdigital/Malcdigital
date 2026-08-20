@@ -305,6 +305,59 @@ def cmd_run(args) -> int:
     return 0
 
 
+def cmd_serve(args) -> int:
+    """Run the local dashboard."""
+    settings = load_settings(args)
+    if getattr(args, "manual", False):
+        settings.execution_mode = "manual"
+    engine = _engine(settings, getattr(args, "offline", False),
+                     getattr(args, "strict", False))
+
+    from quantdesk.web import serve
+
+    serve(engine, host=args.host, port=args.port, open_browser=args.open)
+    return 0
+
+
+def cmd_approve(args) -> int:
+    """Approve or reject queued ideas from the terminal."""
+    settings = load_settings(args)
+    engine = _engine(settings, getattr(args, "offline", False),
+                     getattr(args, "strict", False))
+
+    pending = engine.store.proposals("pending")
+    if not pending:
+        print(dim("Nothing queued for approval."))
+        return 0
+
+    if args.list or not (args.approve or args.reject):
+        print(bold(f"\n{len(pending)} idea(s) awaiting a decision\n"))
+        for p in pending:
+            side = "SHORT" if p.is_short else "LONG"
+            print(bold(f"  #{p.id}  {p.symbol}  {side}  {p.score:.0f}/100")
+                  + f"  {p.setup}  expires {p.expires_date}")
+            if p.proxy_for:
+                print(dim(f"      bearish view on {p.proxy_for} via inverse ETF"))
+            for line in p.instruction_lines[:3]:
+                print(f"      {line}")
+            print()
+        print(dim("Approve with:  quantdesk approve --approve <id>"))
+        print(dim("Reject with:   quantdesk approve --reject <id>"))
+        return 0
+
+    for pid in args.approve or []:
+        proposal, event = engine.approve_proposal(pid)
+        if proposal is None:
+            print(red(f"  #{pid} is not pending"))
+        else:
+            print(green(f"  approved #{pid} {proposal.symbol}") + f" - {event.detail}")
+    for pid in args.reject or []:
+        proposal = engine.reject_proposal(pid)
+        print(red(f"  #{pid} is not pending") if proposal is None
+              else dim(f"  skipped #{pid} {proposal.symbol}"))
+    return 0
+
+
 def cmd_doctor(args) -> int:
     """Verify this machine can actually reach live market data."""
     from quantdesk.diagnostics import run_diagnostics
@@ -549,6 +602,25 @@ def build_parser() -> argparse.ArgumentParser:
                    help="POST a summary to QUANTDESK_WEBHOOK_URL")
     _add_common(p)
     p.set_defaults(func=cmd_run)
+
+    p = sub.add_parser("serve", help="run the local dashboard with charts")
+    p.add_argument("--port", type=int, default=8000)
+    p.add_argument("--host", default="127.0.0.1",
+                   help="0.0.0.0 to reach it from your phone on the same Wi-Fi. "
+                        "There is no authentication: anyone who can reach the "
+                        "port can approve trades. Trusted networks only.")
+    p.add_argument("--manual", action="store_true",
+                   help="queue ideas for approval instead of placing them")
+    p.add_argument("--open", action="store_true", help="open a browser")
+    _add_common(p)
+    p.set_defaults(func=cmd_serve)
+
+    p = sub.add_parser("approve", help="review queued ideas from the terminal")
+    p.add_argument("--approve", type=int, nargs="*", metavar="ID")
+    p.add_argument("--reject", type=int, nargs="*", metavar="ID")
+    p.add_argument("--list", action="store_true")
+    _add_common(p)
+    p.set_defaults(func=cmd_approve)
 
     p = sub.add_parser("doctor", help="check this machine can reach live market data")
     p.add_argument("--skip-news", action="store_true", help="only test price feeds")

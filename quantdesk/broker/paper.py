@@ -16,6 +16,12 @@ Design decisions that keep the simulation honest rather than flattering:
   pessimistic, which is the only safe direction to be wrong in.
 
 * **Slippage and commission are charged** on every fill, always against you.
+
+* **Shorts hold margin.** Selling short does not credit the proceeds to cash -
+  the notional is held aside as margin and released on cover, along with the
+  profit or loss. Real brokers require roughly 150% under Reg T; holding 100%
+  is a simplification, but it is the conservative direction and it stops the
+  simulator handing out unlimited leverage, which crediting the proceeds would.
 """
 
 from __future__ import annotations
@@ -93,12 +99,13 @@ class PaperBroker:
         if plan.shares <= 0:
             return ExecutionEvent("rejected", plan.symbol, "plan sizes to zero shares")
 
-        order_type = {"buy_stop": "stop", "limit": "limit", "market": "market"}[
-            plan.entry_style
-        ]
+        order_type = {
+            "buy_stop": "stop", "sell_stop": "stop",
+            "limit": "limit", "market": "market",
+        }[plan.entry_style]
         order = Order(
             symbol=plan.symbol,
-            side="buy",
+            side="sell" if plan.direction == "short" else "buy",
             order_type=order_type,
             shares=plan.shares,
             trigger_price=plan.entry_price if order_type != "market" else None,
@@ -110,12 +117,15 @@ class PaperBroker:
             created_date=as_of,
             expires_date=as_of + timedelta(days=ORDER_LIFETIME_DAYS),
             note=plan.entry_condition,
+            direction=plan.direction,
+            proxy_for=plan.proxy_for,
         )
         self.store.add_order(order)
+        side = "sell-short" if plan.direction == "short" else "buy"
         label = {
-            "stop": f"buy-stop @ ${plan.entry_price:,.2f}",
-            "limit": f"buy-limit @ ${plan.entry_price:,.2f}",
-            "market": "market-on-open",
+            "stop": f"{side}-stop @ ${plan.entry_price:,.2f}",
+            "limit": f"{side}-limit @ ${plan.entry_price:,.2f}",
+            "market": f"{side} market-on-open",
         }[order_type]
         return ExecutionEvent(
             "order", plan.symbol,
@@ -151,25 +161,34 @@ class PaperBroker:
                           float(bar["low"]), float(bar["close"]))
 
             # 1. Stop first - the pessimistic assumption (see module docstring).
-            if l <= position.stop_price:
+            #    A short is stopped out when price rises through the stop.
+            stopped = (h >= position.stop_price) if position.is_short else (l <= position.stop_price)
+            if stopped:
+                gapped = (
+                    o >= position.stop_price if position.is_short
+                    else o <= position.stop_price
+                )
                 # A gap through the stop fills at the open, not the stop price.
-                exit_price = o if o <= position.stop_price else position.stop_price
+                exit_price = o if gapped else position.stop_price
                 reason = (
                     "gapped through the stop - filled at the open"
-                    if o <= position.stop_price
-                    else "stop loss hit"
+                    if gapped else "stop loss hit"
                 )
                 self._close(position, position.shares, exit_price, as_of, reason, summary)
                 continue
 
-            # 2. Targets, in ascending order.
+            # 2. Targets. For a short these sit below entry and are hit on the low.
             remaining_targets = list(position.targets)
             hit_any = False
             for target_price, take_frac in list(remaining_targets):
-                if h >= target_price and position.shares > 0:
+                reached = (
+                    l <= target_price if position.is_short else h >= target_price
+                )
+                if reached and position.shares > 0:
                     qty = max(1, int(round(position.shares * take_frac)))
                     qty = min(qty, position.shares)
-                    fill = max(target_price, o)  # a gap above the target fills better
+                    # A gap beyond the target fills better, in either direction.
+                    fill = min(target_price, o) if position.is_short else max(target_price, o)
                     self._close(
                         position, qty, fill, as_of,
                         f"target ${target_price:,.2f} reached", summary,
@@ -200,7 +219,10 @@ class PaperBroker:
         self, position: Position, close: float, bars, as_of: date, summary
     ) -> None:
         profile = self.settings.profile
-        if close > position.highest_close:
+        if position.is_short:
+            if position.lowest_close <= 0 or close < position.lowest_close:
+                position.lowest_close = close
+        elif close > position.highest_close:
             position.highest_close = close
 
         r_now = position.r_multiple(close)
@@ -218,17 +240,25 @@ class PaperBroker:
             raw = series.iloc[-1]
             atr_val = float(raw) if pd.notna(raw) else close * 0.02
 
-        trailed = position.highest_close - profile.trail_atr_mult * atr_val
-        # Never below breakeven once trailing has activated, and never backwards.
-        new_stop = round(max(trailed, position.entry_price, position.stop_price), 2)
+        if position.is_short:
+            trailed = position.lowest_close + profile.trail_atr_mult * atr_val
+            # Never above breakeven once trailing has activated, and never backwards.
+            new_stop = round(min(trailed, position.entry_price, position.stop_price), 2)
+            improved = new_stop < position.stop_price - 1e-9
+            verb = "lowered"
+        else:
+            trailed = position.highest_close - profile.trail_atr_mult * atr_val
+            new_stop = round(max(trailed, position.entry_price, position.stop_price), 2)
+            improved = new_stop > position.stop_price + 1e-9
+            verb = "raised"
 
-        if new_stop > position.stop_price + 1e-9:
+        if improved:
             old = position.stop_price
             position.stop_price = new_stop
             self.store.update_position(position)
             summary.add(ExecutionEvent(
                 "stop_moved", position.symbol,
-                f"trailing stop raised ${old:,.2f} -> ${new_stop:,.2f} "
+                f"trailing stop {verb} ${old:,.2f} -> ${new_stop:,.2f} "
                 f"(open profit {r_now:.2f}R)",
                 price=new_stop,
             ))
@@ -241,14 +271,22 @@ class PaperBroker:
         if shares <= 0:
             return
 
-        fill = self._sell_fill_price(price)
         commission = self._commission(shares)
-        proceeds = shares * fill - commission
-        pnl = (fill - position.entry_price) * shares - commission
+        if position.is_short:
+            # Covering is a purchase, so slippage pushes the price up against you.
+            fill = self._buy_fill_price(price)
+            pnl = (position.entry_price - fill) * shares - commission
+            # Release the margin held at entry, then apply the result.
+            self.store.cash = self.store.cash + shares * position.entry_price + pnl
+            action = "cover"
+        else:
+            fill = self._sell_fill_price(price)
+            pnl = (fill - position.entry_price) * shares - commission
+            self.store.cash = self.store.cash + shares * fill - commission
+            action = "sell"
 
-        self.store.cash = self.store.cash + proceeds
         self.store.record_trade(Trade(
-            symbol=position.symbol, action="sell", shares=shares, price=fill,
+            symbol=position.symbol, action=action, shares=shares, price=fill,
             trade_date=as_of, commission=commission, reason=reason,
             realized_pnl=round(pnl, 2), position_id=position.id,
         ))
@@ -263,7 +301,7 @@ class PaperBroker:
         summary.add(ExecutionEvent(
             "partial" if partial and position.shares > 0 else "exit",
             position.symbol,
-            f"sold {shares} @ ${fill:,.2f} - {reason} "
+            f"{'covered' if position.is_short else 'sold'} {shares} @ ${fill:,.2f} - {reason} "
             f"(P&L ${pnl:+,.2f}, {position.r_multiple(fill):+.2f}R)",
             shares=shares, price=fill, pnl=round(pnl, 2),
         ))
@@ -309,8 +347,32 @@ class PaperBroker:
                 ))
                 continue
 
-            fill = self._buy_fill_price(fill_price)
+            if order.direction == "short":
+                if not profile.allow_short:
+                    self.store.set_order_status(order.id, "cancelled")
+                    summary.add(ExecutionEvent(
+                        "rejected", order.symbol,
+                        f"the {profile.name} profile does not permit short selling",
+                    ))
+                    continue
+                open_shorts = sum(1 for p in positions if p.is_short)
+                if open_shorts >= profile.max_short_positions:
+                    self.store.set_order_status(order.id, "cancelled")
+                    summary.add(ExecutionEvent(
+                        "rejected", order.symbol,
+                        f"at the {profile.max_short_positions}-short limit - a short "
+                        "book that all squeezes together is how accounts blow up",
+                    ))
+                    continue
+
+            if order.direction == "short":
+                # Selling short: slippage pushes the fill down against you.
+                fill = self._sell_fill_price(fill_price)
+            else:
+                fill = self._buy_fill_price(fill_price)
             commission = self._commission(order.shares)
+            # Cost is the same either way: cash paid for a long, margin held for
+            # a short. Both reduce buying power by the notional.
             cost = order.shares * fill + commission
 
             # Respect the cash floor: never deploy the whole account.
@@ -343,19 +405,25 @@ class PaperBroker:
                 initial_stop=order.stop_loss, targets=order.targets,
                 setup=order.setup, risk_dollars=order.risk_dollars,
                 highest_close=fill, time_stop_days=order.time_stop_days,
+                direction=order.direction, lowest_close=fill,
+                proxy_for=order.proxy_for,
             )
             pid = self.store.add_position(position)
             self.store.record_trade(Trade(
-                symbol=order.symbol, action="buy", shares=order.shares, price=fill,
+                symbol=order.symbol,
+                action="short" if order.direction == "short" else "buy",
+                shares=order.shares, price=fill,
                 trade_date=as_of, commission=commission,
-                reason=f"{order.setup} entry ({order.order_type})", position_id=pid,
+                reason=f"{order.setup} {order.direction} entry ({order.order_type})",
+                position_id=pid,
             ))
             self.store.set_order_status(order.id, "filled")
             open_symbols.add(order.symbol)
 
             summary.add(ExecutionEvent(
                 "fill", order.symbol,
-                f"bought {order.shares} @ ${fill:,.2f} "
+                f"{'sold short' if order.direction == 'short' else 'bought'} "
+                f"{order.shares} @ ${fill:,.2f} "
                 f"({order.order_type} order, {order.setup} setup), "
                 f"stop ${order.stop_loss:,.2f}",
                 shares=order.shares, price=fill,
@@ -363,19 +431,36 @@ class PaperBroker:
 
     @staticmethod
     def _match(order: Order, open_: float, high: float, low: float) -> float | None:
-        """Return the fill price if this bar triggers the order, else None."""
+        """Return the fill price if this bar triggers the order, else None.
+
+        The comparisons mirror for a short: a sell-stop triggers on the way
+        *down*, and a short limit fills on a rally *up* to the price. In both
+        directions a gap through the trigger fills at the open, which is worse
+        for stops and better for limits - the same asymmetry a real book has.
+        """
         if order.order_type == "market":
             return open_
         trigger = order.trigger_price
         if trigger is None:
             return None
+        is_short = order.direction == "short"
+
         if order.order_type == "stop":
-            # Buy-stop triggers on the way up; a gap above fills at the open.
+            if is_short:
+                # Sell-stop: triggers breaking down; a gap below fills at the open.
+                if low <= trigger:
+                    return min(open_, trigger)
+                return None
             if high >= trigger:
                 return max(open_, trigger)
             return None
+
         if order.order_type == "limit":
-            # Buy-limit fills only at or below the limit; a gap below fills better.
+            if is_short:
+                # Short limit: fills only at or above the limit.
+                if high >= trigger:
+                    return max(open_, trigger)
+                return None
             if low <= trigger:
                 return min(open_, trigger)
             return None

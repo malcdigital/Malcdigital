@@ -68,22 +68,50 @@ class RiskProfile:
     etf_target_pct: float
     """Share of the deployed book that should sit in ETFs rather than singles."""
 
+    allow_short: bool = False
+    """May the desk take short positions at all?"""
+
+    short_size_pct: float = 0.6
+    """Fraction of the usual risk budget used on shorts.
+
+    Shorts carry unlimited theoretical loss and tend to move faster than longs,
+    so the same signal quality warrants a smaller stake.
+    """
+
+    prefer_inverse_etf: bool = False
+    """Express bearish views by buying an inverse ETF rather than selling short.
+
+    A cash account cannot sell short at all, and an inverse ETF caps the loss at
+    the amount invested. The cost is tracking error and decay over long holds.
+    """
+
+    max_short_positions: int = 3
+    """Concurrent shorts. Kept well below the long cap - a short book that all
+    moves together in a squeeze is how accounts blow up."""
+
     def size_position(
-        self, equity: float, entry: float, stop: float
+        self, equity: float, entry: float, stop: float, direction: str = "long"
     ) -> tuple[int, str]:
         """Return (shares, explanation) for a trade, honouring both risk caps.
 
         Two independent limits apply and the tighter one wins:
-          * risk-based  - shares such that (entry - stop) * shares == risk budget
+          * risk-based  - shares such that per-share risk * shares == risk budget
           * exposure    - shares such that entry * shares <= max position value
+
+        Risk per share is measured in the direction the trade can go wrong: below
+        entry for a long, above it for a short.
         """
         if entry <= 0:
             return 0, "invalid entry price"
-        per_share_risk = entry - stop
+
+        per_share_risk = (entry - stop) if direction == "long" else (stop - entry)
         if per_share_risk <= 0:
-            return 0, "stop must sit below entry for a long position"
+            side = "below" if direction == "long" else "above"
+            return 0, f"stop must sit {side} entry for a {direction} position"
 
         risk_budget = equity * self.risk_per_trade_pct
+        if direction == "short":
+            risk_budget *= self.short_size_pct
         by_risk = int(risk_budget // per_share_risk)
 
         exposure_cap = equity * self.max_position_pct
@@ -122,6 +150,9 @@ CONSERVATIVE = RiskProfile(
     max_annual_volatility=0.35,
     min_avg_dollar_volume=25_000_000,
     etf_target_pct=0.70,
+    allow_short=False,
+    prefer_inverse_etf=True,
+    max_short_positions=2,
 )
 
 MODERATE = RiskProfile(
@@ -145,6 +176,10 @@ MODERATE = RiskProfile(
     max_annual_volatility=0.55,
     min_avg_dollar_volume=10_000_000,
     etf_target_pct=0.45,
+    allow_short=True,
+    short_size_pct=0.55,
+    prefer_inverse_etf=True,
+    max_short_positions=3,
 )
 
 AGGRESSIVE = RiskProfile(
@@ -169,6 +204,10 @@ AGGRESSIVE = RiskProfile(
     max_annual_volatility=0.95,
     min_avg_dollar_volume=5_000_000,
     etf_target_pct=0.25,
+    allow_short=True,
+    short_size_pct=0.75,
+    prefer_inverse_etf=False,
+    max_short_positions=5,
 )
 
 RISK_PROFILES: dict[str, RiskProfile] = {
@@ -197,12 +236,32 @@ class Settings:
     broker: str = "paper"
     """paper (built-in simulator) | alpaca (Alpaca paper account)."""
 
+    execution_mode: str = "auto"
+    """auto - ideas are placed as working orders immediately.
+    manual - ideas are queued for approval and nothing reaches the broker
+    until a human approves them."""
+
+    proposal_lifetime_days: int = 3
+    """How long a queued idea stays reviewable before the setup goes stale."""
+
     news_enabled: bool = True
     news_lookback_days: int = 7
     max_news_per_symbol: int = 25
 
     watchlist: list[str] = field(default_factory=list)
     """Extra symbols to consider on top of the risk-tier universe."""
+
+    universe: str = "curated"
+    """curated (the risk-tier list) | wide (screen the bundled symbol file)."""
+
+    symbols_file: str = ""
+    """Path to a newline-separated symbol list. Empty uses the bundled file."""
+
+    multi_timeframe: bool = True
+    """Require the weekly trend to agree before taking a daily entry."""
+
+    use_regime_filter: bool = True
+    """Scale exposure to the broad market regime."""
 
     commission_per_share: float = 0.0
     slippage_bps: float = 5.0
