@@ -32,6 +32,7 @@ class ChartTheme:
     accent: str = "var(--accent)"
     stop: str = "var(--down)"
     target: str = "var(--up)"
+    muted_line: str = "var(--muted)"
 
 
 def _fmt(value: float) -> str:
@@ -280,6 +281,88 @@ def equity_curve(
             f'<text x="{x_of(i):.1f}" y="{height - 6}" font-size="11" '
             f'text-anchor="{"start" if i == 0 else "end"}" fill="{theme.text}">'
             f'{html.escape(points[i][0])}</text>'
+        )
+    parts.append("</svg>")
+    return "".join(parts)
+
+
+def equity_comparison(
+    strategy: list[tuple[str, float]],
+    benchmark: list[tuple[str, float]],
+    width: int = 900,
+    height: int = 280,
+    theme: ChartTheme | None = None,
+) -> str:
+    """Two equity curves on one axis, rebased so the comparison is fair.
+
+    Plotting them on a shared axis is the whole point: a strategy curve alone
+    always looks like a success, because it starts at the bottom left and the
+    eye supplies no alternative.
+    """
+    theme = theme or ChartTheme()
+    if len(strategy) < 2:
+        return (
+            '<svg viewBox="0 0 900 280" role="img"><text x="450" y="140" '
+            'text-anchor="middle" font-size="13" fill="var(--muted)">'
+            'Not enough history to chart.</text></svg>'
+        )
+
+    series = [("Strategy", strategy, theme.accent)]
+    if len(benchmark) >= 2:
+        series.append(("Buy &amp; hold", benchmark, theme.muted_line))
+
+    all_values = [v for _, points, _ in series for _, v in points]
+    low, high = min(all_values), max(all_values)
+    span = max(high - low, 1e-9)
+    low -= span * 0.08
+    high += span * 0.08
+    span = high - low
+
+    pad_left, pad_right, pad_top, pad_bottom = 8, 68, 26, 24
+    plot_w = width - pad_left - pad_right
+    plot_h = height - pad_top - pad_bottom
+
+    def y_of(v: float) -> float:
+        return pad_top + (high - v) / span * plot_h
+
+    parts = [
+        f'<svg viewBox="0 0 {width} {height}" preserveAspectRatio="none" '
+        f'class="chart" role="img">'
+    ]
+    for k in range(4):
+        value = high - span * k / 3
+        y = y_of(value)
+        parts.append(
+            f'<line x1="{pad_left}" y1="{y:.1f}" x2="{pad_left + plot_w}" '
+            f'y2="{y:.1f}" stroke="{theme.grid}" stroke-width="1" '
+            f'stroke-dasharray="2 4"/>'
+        )
+        parts.append(
+            f'<text x="{pad_left + plot_w + 6}" y="{y + 4:.1f}" font-size="11" '
+            f'fill="{theme.text}">{_fmt(value)}</text>'
+        )
+
+    for index, (label, points, colour) in enumerate(series):
+        step = plot_w / max(len(points) - 1, 1)
+        coords = " ".join(
+            f"{pad_left + step * i:.1f},{y_of(v):.1f}" for i, (_, v) in enumerate(points)
+        )
+        dash = "" if index == 0 else ' stroke-dasharray="5 4"'
+        parts.append(
+            f'<polyline points="{coords}" fill="none" stroke="{colour}" '
+            f'stroke-width="2"{dash}/>'
+        )
+        parts.append(
+            f'<text x="{pad_left + 8 + index * 110}" y="{pad_top - 10}" '
+            f'font-size="12" font-weight="600" fill="{colour}">{label}</text>'
+        )
+
+    for i, position in ((0, "start"), (len(strategy) - 1, "end")):
+        step = plot_w / max(len(strategy) - 1, 1)
+        parts.append(
+            f'<text x="{pad_left + step * i:.1f}" y="{height - 6}" font-size="11" '
+            f'text-anchor="{position}" fill="{theme.text}">'
+            f'{html.escape(strategy[i][0])}</text>'
         )
     parts.append("</svg>")
     return "".join(parts)

@@ -177,6 +177,56 @@ page (`latest.html`) that works in light and dark mode.
 
 ---
 
+## Backtesting
+
+The only way to find out whether any of this works — and the easiest thing in
+quantitative finance to get flatteringly wrong.
+
+```bash
+quantdesk backtest --symbols SPY,QQQ,AAPL,MSFT,NVDA --scan-every 2
+quantdesk backtest --max-symbols 40 --start 2019-01-01
+```
+
+```
+                             STRATEGY   BUY & HOLD
+  Total return                 28.07%      229.88%
+  CAGR                          6.67%       36.56%
+  Max drawdown                 -6.32%      -20.26%
+  Sharpe                        1.47         1.63
+
+  Versus benchmark           -201.81%
+                             ^ the number that decides it
+```
+
+Three commitments keep it honest:
+
+**No look-ahead.** Each session sees only bars dated on or before that day. The
+test for this is direct: run the same window twice with different end dates, and
+the overlapping equity must be identical to the cent. If a signal could see the
+future, extending the end would change the past.
+
+**The same code as live.** Scoring, sizing, plan construction and execution all
+run through the production path. A backtest with its own simplified fill logic
+measures the simplified logic, not the strategy you would actually run.
+
+**A benchmark, always.** Absolute return means nothing alone — beating cash
+while losing to buy-and-hold is a losing strategy that looks like a winning one.
+The verdict says so in those words when it happens.
+
+The verdict is written to disappoint where warranted: it leads with sample size,
+flags a window too short to span more than one regime, and pairs every
+favourable reading with the reason it might be wrong. A good backtest number
+believed is more dangerous than a bad one.
+
+**News is off during backtests.** Historical headlines are not available from
+the free feeds, and scoring today's news against a 2019 bar would be look-ahead
+of the worst kind. Sentiment scores neutral throughout, so a backtest measures
+the technical rules only.
+
+Runtime scales with universe × sessions. Roughly 12 symbols over 1,000 sessions
+takes about a minute; `--scan-every 5` scans weekly while still managing
+positions daily, cutting it by most of that.
+
 ## The dashboard
 
 ```bash
@@ -335,6 +385,7 @@ number that actually determines position size.
 quantdesk doctor                   # can this machine reach live market data?
 quantdesk init --cash 100000 --risk moderate --watchlist NVDA,AMD
 quantdesk run --strict             # one trading day + report, real data only
+quantdesk backtest --max-symbols 20   # test the rules against history
 quantdesk serve                    # dashboard with charts at localhost:8000
 quantdesk approve --list           # review queued ideas in the terminal
 quantdesk run --email --webhook    # and deliver it
@@ -426,7 +477,7 @@ pip install pytest
 python -m pytest tests/ -q
 ```
 
-160 tests, green on Python 3.10–3.13 and on the oldest supported dependencies.
+182 tests, green on Python 3.10–3.13 and on the oldest supported dependencies.
 
 Indicators are checked against hand-derived values; every candlestick detector
 against a constructed example of its pattern; the trend classifier for
@@ -437,6 +488,11 @@ silently drops the shape rather than erroring; the approval path driven over
 real HTTP; and a walk-forward run verifying the accounting invariants hold over
 many sessions without look-ahead.
 
+The backtest's look-ahead guarantee is tested directly rather than asserted:
+the same window run to two different end dates must produce identical
+overlapping equity, and the precomputed indicator frames that make it fast are
+checked against freshly computed ones column by column.
+
 ---
 
 ## Layout
@@ -446,6 +502,8 @@ quantdesk/
   config.py            risk profiles and settings
   engine.py            the daily cycle
   cli.py               command line interface
+  backtest.py          walk-forward backtesting
+  backtest_report.py   backtest report (text + HTML)
   diagnostics.py       preflight checks
   notify.py            email / webhook delivery
   data/                providers (Yahoo, Stooq, synthetic), cache, symbol list
@@ -468,3 +526,6 @@ quantdesk/
 - **The universe is a curated list**, not the whole market.
 - **A profitable simulation is not an edge.** With a handful of closed trades you
   are looking at noise; the report says so until there are 30+.
+- **These rules were written with this data available.** Some of any backtested
+  edge is hindsight, and no amount of testing removes that. Out-of-sample
+  results on data you have never looked at are the only real check.

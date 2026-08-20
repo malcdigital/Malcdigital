@@ -68,14 +68,21 @@ def to_weekly(bars: pd.DataFrame) -> pd.DataFrame:
     return weekly.dropna(subset=["open", "high", "low", "close"])
 
 
-def confirm(bars: pd.DataFrame, direction: str, min_weeks: int = 60) -> TimeframeCheck:
+def confirm(
+    bars: pd.DataFrame,
+    direction: str,
+    min_weeks: int = 60,
+    weekly: pd.DataFrame | None = None,
+    weekly_enriched: pd.DataFrame | None = None,
+) -> TimeframeCheck:
     """Check whether the weekly trend supports a ``direction`` trade.
 
     With too little history to classify a weekly trend the verdict is neutral
     rather than a rejection: absence of evidence should not read as evidence
     against, or every recently listed instrument becomes permanently untradeable.
     """
-    weekly = to_weekly(bars)
+    if weekly is None:
+        weekly = to_weekly(bars)
     if len(weekly) < min_weeks:
         return TimeframeCheck(
             NEUTRAL, None, len(weekly),
@@ -83,7 +90,10 @@ def confirm(bars: pd.DataFrame, direction: str, min_weeks: int = 60) -> Timefram
         )
 
     try:
-        weekly_trend = classify(weekly, ind.compute_all(weekly))
+        weekly_trend = classify(
+            weekly,
+            weekly_enriched if weekly_enriched is not None else ind.compute_all(weekly),
+        )
     except Exception:
         return TimeframeCheck(
             NEUTRAL, None, len(weekly), "weekly trend could not be classified"

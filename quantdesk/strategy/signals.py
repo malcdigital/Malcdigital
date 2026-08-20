@@ -200,9 +200,20 @@ def score_symbol(
     asset_type: str = "stock",
     sector_bias: float = 0.0,
     multi_timeframe: bool = True,
+    enriched: pd.DataFrame | None = None,
+    weekly: pd.DataFrame | None = None,
+    weekly_enriched: pd.DataFrame | None = None,
 ) -> SignalReport:
-    """Score one candidate across all dimensions and apply hard vetoes."""
-    enriched = ind.compute_all(bars)
+    """Score one candidate across all dimensions and apply hard vetoes.
+
+    The optional precomputed frames exist for callers that score the same symbol
+    repeatedly over a moving window - a backtest does this hundreds of times per
+    symbol. Every indicator involved is backward-looking, so a precomputed frame
+    sliced to the same window is identical to one computed from the slice; there
+    is no look-ahead in supplying them.
+    """
+    if enriched is None:
+        enriched = ind.compute_all(bars)
     trend = classify(bars, enriched)
     last = enriched.iloc[-1]
     close = float(last["close"])
@@ -212,7 +223,7 @@ def score_symbol(
         return float(v) if pd.notna(v) else float("nan")
 
     scanner = CandlestickScanner()
-    patterns = scanner.scan(bars, lookback=10)
+    patterns = scanner.scan(bars, lookback=10, atr_series=enriched.get("atr14"))
     pattern_summary = summarise_patterns(patterns, latest_index=len(bars) - 1)
 
     rs = relative_strength(bars, benchmark_bars) if benchmark_bars is not None else 0.0
@@ -310,7 +321,9 @@ def score_symbol(
     timeframe: TimeframeCheck | None = None
     if multi_timeframe:
         try:
-            timeframe = confirm_timeframe(bars, direction)
+            timeframe = confirm_timeframe(
+                bars, direction, weekly=weekly, weekly_enriched=weekly_enriched
+            )
         except Exception:
             timeframe = None
 
