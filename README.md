@@ -296,6 +296,69 @@ held longer than winners. Nothing here searches for better parameters — tuning
 a strategy until its backtest improves, on the same data that produced the
 diagnosis, is how backtests become fiction.
 
+## Out-of-sample testing
+
+Every rule in this repository was written with the whole history available.
+That makes every number above partly a memory of what happened rather than a
+prediction of what will — and the difference does not show up as an error. It
+shows up as a strategy that worked in testing and does not work with money in
+it.
+
+```bash
+# develop against the fit window; the holdout stays sealed
+quantdesk backtest --provider csv --start 2017-09-01 --end 2026-08-20 --split
+
+# when you are done changing things, look once
+quantdesk backtest --provider csv --start 2017-09-01 --end 2026-08-20 \
+    --split --reveal-holdout
+```
+
+```
+OUT-OF-SAMPLE SPLIT
+------------------------------------------------------------------------------
+  Fit window    2022-01-01 to 2024-01-04
+  Holdout       2024-01-05 to 2024-12-31 (1.0 years)
+  Reveals       1
+
+  MEASURE                    FIT     HOLDOUT      CHANGE
+  CAGR                     4.90%       1.62%      -3.28%  worse
+  Sharpe                   1.63        0.86       -0.77   worse
+  Profit factor            1.86        1.53       -0.33   worse
+
+  - Out of sample it kept 33% of its fitted CAGR. Losing more than half is the
+    usual sign that the rules were shaped by this particular history.
+```
+
+The number that matters is not how it did on either window. It is **how much
+worse** it did on the one it could not have been fitted to.
+
+Three things the split does deliberately:
+
+- **The windows never share a session.** The holdout starts the day after the
+  fit window ends. A shared session would let the fit window's open positions
+  settle inside the holdout, which is exactly the leak a split exists to
+  prevent.
+- **Each window is an independent run** — same starting cash, its own
+  benchmark. Carrying one portfolio across the boundary would mean the holdout
+  was scoring the fit window as much as itself.
+- **The holdout is not run unless you ask.** No holdout number appears anywhere
+  on the page until `--reveal-holdout`, because a number you have seen is a
+  number you will design against.
+
+**A holdout is consumed by use.** Look at it, change something, look again, and
+it has quietly become training data — the same overfitting, just slower and
+with more steps in between. No software can prevent that. So every reveal is
+counted in `~/.quantdesk/holdout-reveals.json`, and the report says so:
+
+```
+  Reveals       2  <- each one costs some of what a holdout is for
+```
+
+After three, the verdict stops treating it as a holdout at all and says to get
+fresh data instead. `--split-at YYYY-MM-DD` picks the boundary yourself; the
+default gives two-thirds of the window to fitting. Both ends of the window must
+be explicit, so the same split carves the same holdout every time.
+
 ## The dashboard
 
 ```bash
@@ -456,6 +519,7 @@ quantdesk init --cash 100000 --risk moderate --watchlist NVDA,AMD
 quantdesk run --strict             # one trading day + report, real data only
 quantdesk fetch --years 10          # save history for offline, repeatable tests
 quantdesk backtest --max-symbols 20   # test the rules against history
+quantdesk backtest --split         # hold out the last third, sealed
 quantdesk serve                    # dashboard with charts at localhost:8000
 quantdesk approve --list           # review queued ideas in the terminal
 quantdesk run --email --webhook    # and deliver it
@@ -580,6 +644,7 @@ quantdesk/
   cli.py               command line interface
   backtest.py          walk-forward backtesting
   backtest_report.py   backtest report (text + HTML)
+  walkforward.py       out-of-sample split and reveal log
   diagnostics.py       preflight checks
   notify.py            email / webhook delivery
   data/                providers (Yahoo, Stooq, CSV, synthetic), cache, symbols
@@ -604,5 +669,8 @@ quantdesk/
 - **A profitable simulation is not an edge.** With a handful of closed trades you
   are looking at noise; the report says so until there are 30+.
 - **These rules were written with this data available.** Some of any backtested
-  edge is hindsight, and no amount of testing removes that. Out-of-sample
-  results on data you have never looked at are the only real check.
+  edge is hindsight, and no amount of testing removes that. `--split` is the
+  cheap defence — it seals a holdout and reports how much of the fitted edge
+  survived it — but a holdout is spent by looking at it, and it counts your
+  looks for that reason. Data that did not exist when the rules were written is
+  the only check that cannot be gamed.

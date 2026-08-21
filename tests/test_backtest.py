@@ -364,3 +364,41 @@ def test_the_html_report_survives_a_missing_benchmark():
         equity_curve=[(date(2024, 1, 1), 100000.0), (date(2024, 3, 1), 105000.0)],
     ))
     assert "n/a" in html and "+5.0%" in html
+
+
+def test_headline_trade_stats_agree_with_the_breakdown():
+    """The two halves of the report must count the same thing.
+
+    A real nine-year run printed "Closed 1,147 / win rate 57.9% / avg win $398
+    against avg loss $452" directly above a breakdown reading 852 positions,
+    45.7%, $677 against $470. Both were computed correctly; they were counting
+    different units, and the reader has no way to tell which to believe.
+    """
+    from datetime import date
+
+    from quantdesk.analysis.trades import analyze_trades
+    from quantdesk.backtest import compute_metrics
+    from quantdesk.portfolio.store import Trade
+
+    trades = []
+    for pid in range(1, 11):
+        trades.append(Trade(symbol="X", action="buy", shares=100, price=100.0,
+                            trade_date=date(2024, 1, 1), position_id=pid))
+        # Half off at the target, the rest stopped out below entry: one
+        # position, one modest win - not a big win plus a separate loss.
+        trades.append(Trade(symbol="X", action="sell", shares=50, price=120.0,
+                            trade_date=date(2024, 2, 1), position_id=pid,
+                            reason="target $120.00 reached", realized_pnl=1000.0,
+                            r_multiple=2.0, holding_days=31))
+        trades.append(Trade(symbol="X", action="sell", shares=50, price=95.0,
+                            trade_date=date(2024, 2, 10), position_id=pid,
+                            reason="stop loss hit", realized_pnl=-250.0,
+                            r_multiple=-0.5, holding_days=40))
+
+    equity = [(date(2024, 1, 1), 100000.0), (date(2024, 3, 1), 107500.0)]
+    metrics = compute_metrics(equity, trades)
+    breakdown = analyze_trades(trades)
+
+    assert metrics.closed_trades == breakdown.closed == 10
+    assert metrics.win_rate == round(breakdown.win_rate, 1) == 100.0
+    assert metrics.avg_win == round(breakdown.avg_win_dollars, 2) == 750.0

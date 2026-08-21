@@ -379,3 +379,41 @@ def test_long_labels_do_not_break_the_columns():
     dist = next(x for x in lines if "stop, as planned" in x)
     widest = next(x for x in lines if "worse than planned" in x)
     assert dist.index("%") == widest.index("%")
+
+
+def test_a_banked_first_target_counts_as_reaching_a_target():
+    """The finding that pointed at the wrong thing on real data.
+
+    A position that takes half off at the first target and leaves the rest on a
+    trailing stop is classified by its *final* exit, so it never lands in the
+    target bucket. Counting only that bucket reported 0.6% of positions reaching
+    a target when 28% had banked one - which reads as "the entries never work"
+    instead of "the second target never gets there".
+    """
+    trades = []
+    for pid in range(1, 21):
+        trades.append(entry(pid, shares=100))
+        trades.append(leg(pid, "target $110.00 reached", 2.0, 50, 500.0, day=2))
+        trades.append(leg(pid, "stop loss hit", 0.9, 50, 220.0, day=3,
+                          trailed=True))
+    # Ten more that never get near a target, to keep the sample above 30.
+    for pid in range(21, 41):
+        trades.append(entry(pid, shares=100))
+        trades.append(leg(pid, "stop loss hit", -1.0, 100, -500.0, day=2))
+
+    analysis = analyze_trades(trades)
+    assert analysis.partial_profit == 20
+    assert analysis.buckets.get(TARGET) is None  # no position *ended* on one
+
+    text = " ".join(analysis.findings())
+    assert "50% of positions banked the first target" in text
+    assert "Only 0% of positions reached a profit target at all" not in text
+
+
+def test_reaching_no_target_at_all_is_still_reported():
+    trades = []
+    for pid in range(1, 41):
+        trades.append(entry(pid, shares=100))
+        trades.append(leg(pid, "stop loss hit", -1.0, 100, -500.0, day=2))
+    text = " ".join(analyze_trades(trades).findings())
+    assert "Only 0% of positions reached a profit target at all" in text
