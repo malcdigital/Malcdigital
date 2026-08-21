@@ -414,9 +414,22 @@ def cmd_backtest(args) -> int:
         print(dim(f"  {done}/{total} sessions  equity ${equity:,.0f}  "
                   f"~{remaining:.0f}s left"), flush=True)
 
-    result = Backtester(engine.provider, config).run(progress=progress)
+    split = None
+    if args.split or args.split_at or args.reveal_holdout:
+        split = _run_split(args, settings, engine, config, progress)
+        if split is None:
+            return 2
+        result = split.holdout if split.revealed else split.fit
+    else:
+        result = Backtester(engine.provider, config).run(progress=progress)
+
     print()
     print(to_text(result))
+    if split is not None:
+        from quantdesk.walkforward import to_text as split_to_text
+
+        print()
+        print(split_to_text(split))
 
     if not args.no_files:
         settings.ensure_dirs()
@@ -435,10 +448,57 @@ def cmd_backtest(args) -> int:
         trades_path = reports / "backtest-trades.csv"
         _write_trade_log(result.trades, trades_path)
 
+        if split is not None:
+            from quantdesk.walkforward import to_text as split_to_text
+
+            (reports / "backtest-split.txt").write_text(
+                split_to_text(split), encoding="utf-8")
+
         print(dim(f"\nHTML report:  {html_path}"))
         print(dim(f"Text report:  {text_path}"))
         print(dim(f"Trade log:    {trades_path}"))
+        if split is not None:
+            print(dim(f"Split report: {reports / 'backtest-split.txt'}"))
     return 0
+
+
+def _run_split(args, settings, engine, config, progress):
+    """Set up and run an out-of-sample split, or explain why it cannot."""
+    from quantdesk.walkforward import RevealLog, run_split
+
+    if config.start is None or config.end is None:
+        # Without both ends the window is whatever history the provider
+        # happened to return, so the same --split would carve a different
+        # holdout next month and the comparison would mean nothing.
+        print("An out-of-sample split needs explicit --start and --end dates, "
+              "so the same split carves the same holdout every time.")
+        return None
+
+    at = None
+    if args.split_at:
+        try:
+            at = date.fromisoformat(args.split_at)
+        except ValueError:
+            print(f"--split-at wants a date like 2023-08-31, not {args.split_at!r}.")
+            return None
+
+    settings.ensure_dirs()
+    log = RevealLog(settings.home / "holdout-reveals.json")
+
+    if args.reveal_holdout:
+        print(dim("Revealing the holdout. This is the one number here that was "
+                  "not available while the rules were written.\n"))
+    else:
+        print(dim("Fit window only. The holdout stays sealed until "
+                  "--reveal-holdout.\n"))
+
+    try:
+        return run_split(engine.provider, config, at=at,
+                         reveal=bool(args.reveal_holdout), log=log,
+                         progress=progress)
+    except ValueError as exc:
+        print(f"Cannot split this window: {exc}")
+        return None
 
 
 def _write_trade_log(trades, path) -> None:
@@ -854,6 +914,16 @@ def build_parser() -> argparse.ArgumentParser:
                    help="sessions between idea scans; positions are still "
                         "managed daily. Raise it to trade fidelity for speed.")
     p.add_argument("--no-files", action="store_true")
+    p.add_argument("--split", action="store_true",
+                   help="hold out the last third of the window. Develop against "
+                        "the fit period; the holdout stays sealed until you ask "
+                        "for it.")
+    p.add_argument("--split-at", metavar="YYYY-MM-DD",
+                   help="split at this date instead of two-thirds through")
+    p.add_argument("--reveal-holdout", action="store_true",
+                   help="also run the held-out period and compare. Every reveal "
+                        "is counted: what you learn from it shapes what you "
+                        "change next, and that is how a holdout stops being one.")
     _add_common(p)
     p.set_defaults(func=cmd_backtest)
 
