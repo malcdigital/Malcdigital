@@ -40,10 +40,17 @@ class SyntheticProvider(DataProvider):
         digest = hashlib.sha256(f"{self.seed_salt}:{symbol.upper()}".encode()).digest()
         return np.random.default_rng(int.from_bytes(digest[:8], "big"))
 
+    #: Most bars this provider will ever fabricate, about ten years.
+    #: A real provider returns whatever history exists; a generator would
+    #: happily invent eighty years because a caller passed a large number,
+    #: which turns "give me everything you have" into an accidental
+    #: denial of service on the caller's own runtime.
+    MAX_BARS = 2_600
+
     def history(self, symbol: str, lookback_days: int = 400) -> Bars:
         symbol = symbol.upper()
         rng = self._rng(symbol)
-        n = max(int(lookback_days) + 60, 260)
+        n = min(max(int(lookback_days) + 60, 260), self.MAX_BARS)
 
         is_etf = symbol in _ETF_HINTS
         # Funds are diversified, so they carry less idiosyncratic volatility.

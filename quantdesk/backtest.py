@@ -99,7 +99,14 @@ class ReplayProvider(DataProvider):
 
     name = "replay"
 
-    def __init__(self, source: DataProvider, symbols: list[str], lookback: int = 1200):
+    #: Effectively "everything the source has" - about twenty-four years, more
+    #: than any free feed serves. A backtest that silently truncated to a few
+    #: years would discard history the user deliberately fetched, and would do
+    #: it without saying so. Providers that generate rather than retrieve cap
+    #: themselves, so this cannot be turned into a request to fabricate.
+    FULL_HISTORY = 6_000
+
+    def __init__(self, source: DataProvider, symbols: list[str], lookback: int = FULL_HISTORY):
         self.source = source
         self.cutoff: pd.Timestamp | None = None
         self._full: dict[str, pd.DataFrame] = {}

@@ -45,6 +45,9 @@ def load_settings(args) -> Settings:
         settings.risk_profile = args.risk
     if getattr(args, "provider", None):
         settings.data_provider = args.provider
+    if getattr(args, "csv_dir", None):
+        settings.csv_dir = str(args.csv_dir)
+        settings.data_provider = "csv"
     if getattr(args, "offline", False):
         settings.data_provider = "synthetic"
         settings.news_enabled = True
@@ -57,7 +60,11 @@ def _engine(settings: Settings, offline: bool = False, strict: bool = False):
     from quantdesk.news.fetch import NewsFetcher
 
     provider = None
-    if strict:
+    if settings.data_provider == "csv":
+        from quantdesk.data import get_provider
+
+        provider = get_provider("csv", csv_dir=settings.bars_dir)
+    elif strict:
         # Building the provider is not enough: yfinance imports cleanly and only
         # fails when it tries to fetch. Without an actual probe, a dead feed
         # yields an empty report at exit 0 - the silent failure --strict exists
@@ -304,6 +311,62 @@ def cmd_run(args) -> int:
             except Exception as exc:
                 print(red(f"webhook failed: {exc}"))
     return 0
+
+
+def cmd_fetch(args) -> int:
+    """Download history to CSV so backtests run offline and reproducibly."""
+    settings = load_settings(args)
+    from quantdesk.data import get_provider
+    from quantdesk.data.csv_files import save_bars
+    from quantdesk.strategy.screener import load_symbols
+    from quantdesk.strategy.universe import BENCHMARK, universe_for
+
+    if args.symbols:
+        symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
+    elif args.symbols_file:
+        symbols = load_symbols(args.symbols_file)
+    else:
+        symbols = universe_for(settings.profile.name)
+    # The benchmark is always needed: without it there is nothing to compare a
+    # backtest against, which is the one number that decides the result.
+    if BENCHMARK not in symbols:
+        symbols.append(BENCHMARK)
+
+    out = Path(args.out).expanduser() if args.out else settings.bars_dir
+    out.mkdir(parents=True, exist_ok=True)
+
+    # Never write generated data into a directory meant to hold real history:
+    # a backtest reading it would look real and mean nothing.
+    provider = get_provider(
+        args.source, settings.cache_dir, allow_synthetic=False
+    )
+
+    print(bold(f"\nFetching {len(symbols)} symbols into {out}"))
+    print(dim(f"  source: {provider.name} | {args.years} years of daily bars\n"))
+
+    saved = failed = 0
+    lookback = int(args.years * 252)
+    for index, symbol in enumerate(symbols, start=1):
+        try:
+            bars = provider.history(symbol, lookback)
+        except Exception as exc:
+            failed += 1
+            print(red(f"  [{index}/{len(symbols)}] {symbol:<8} failed: "
+                      f"{str(exc)[:60]}"))
+            continue
+        path = save_bars(bars, symbol, out)
+        saved += 1
+        print(dim(f"  [{index}/{len(symbols)}] {symbol:<8} {len(bars):>5} bars "
+                  f"{bars.index[0].date()} to {bars.index[-1].date()}"))
+
+    print()
+    print(green(f"  saved {saved} symbol(s) to {out}"))
+    if failed:
+        print(red(f"  {failed} failed - they will simply be skipped by a backtest"))
+    if saved:
+        print(dim("\nBacktest against them with:"))
+        print(dim(f"  quantdesk backtest --provider csv --csv-dir {out}"))
+    return 0 if saved else 1
 
 
 def cmd_backtest(args) -> int:
@@ -600,12 +663,15 @@ def _add_common(p: argparse.ArgumentParser) -> None:
                    help="data directory (default ~/.quantdesk)")
     p.add_argument("--risk", choices=sorted(RISK_PROFILES), default=argparse.SUPPRESS,
                    help="risk profile")
-    p.add_argument("--provider", choices=["auto", "yahoo", "stooq", "synthetic"],
+    p.add_argument("--provider",
+                   choices=["auto", "yahoo", "stooq", "csv", "synthetic"],
                    default=argparse.SUPPRESS, help="market data source")
     p.add_argument("--offline", action="store_true", default=argparse.SUPPRESS,
                    help="use generated data and headlines - no network calls")
     p.add_argument("--strict", action="store_true", default=argparse.SUPPRESS,
                    help="refuse to run on generated data - real market data only")
+    p.add_argument("--csv-dir", default=argparse.SUPPRESS,
+                   help="directory of <SYMBOL>.csv files (with --provider csv)")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -618,12 +684,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--home", help="data directory (default ~/.quantdesk)")
     parser.add_argument("--risk", choices=sorted(RISK_PROFILES),
                         help="override the risk profile for this command")
-    parser.add_argument("--provider", choices=["auto", "yahoo", "stooq", "synthetic"],
+    parser.add_argument("--provider",
+                        choices=["auto", "yahoo", "stooq", "csv", "synthetic"],
                         help="market data source")
     parser.add_argument("--offline", action="store_true",
                         help="use generated data and headlines - no network calls")
     parser.add_argument("--strict", action="store_true",
                         help="refuse to run on generated data - real market data only")
+    parser.add_argument("--csv-dir",
+                        help="directory of <SYMBOL>.csv files (with --provider csv)")
 
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -660,6 +729,19 @@ def build_parser() -> argparse.ArgumentParser:
                    help="POST a summary to QUANTDESK_WEBHOOK_URL")
     _add_common(p)
     p.set_defaults(func=cmd_run)
+
+    p = sub.add_parser("fetch",
+                       help="download history to CSV for offline backtesting")
+    p.add_argument("--symbols", help="comma-separated symbols")
+    p.add_argument("--symbols-file", help="newline-separated symbol list")
+    p.add_argument("--out", help="output directory (default ~/.quantdesk/bars)")
+    p.add_argument("--years", type=float, default=6.0,
+                   help="years of history to request (default 6)")
+    p.add_argument("--source", default="auto",
+                   choices=["auto", "yahoo", "stooq"],
+                   help="where to fetch from; generated data is never written")
+    _add_common(p)
+    p.set_defaults(func=cmd_fetch)
 
     p = sub.add_parser("backtest",
                        help="replay the strategy over history vs buy-and-hold")

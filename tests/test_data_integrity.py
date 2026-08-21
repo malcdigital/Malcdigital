@@ -74,3 +74,31 @@ def test_strict_refuses_to_build_when_no_live_feed_exists(no_network):
     provider = get_provider("auto", allow_synthetic=False)
     with pytest.raises(DataUnavailable):
         provider.history("SPY", 60)
+
+
+def test_synthetic_provider_caps_what_it_fabricates():
+    """A generator must not invent unbounded history on request.
+
+    The backtester asks for "everything the source has" as a large lookback.
+    A real provider returns whatever exists; an uncapped generator answered by
+    fabricating eighty years, turning that request into an accidental denial of
+    service on the caller's own runtime. This is the regression test.
+    """
+    from quantdesk.data.synthetic import SyntheticProvider
+
+    provider = SyntheticProvider()
+    assert len(provider.history("AAPL", 400)) == 460
+    for absurd in (6_000, 20_000, 500_000):
+        bars = provider.history("AAPL", absurd)
+        assert len(bars) == SyntheticProvider.MAX_BARS, (
+            f"asking for {absurd} produced {len(bars)} bars"
+        )
+
+
+def test_full_history_request_stays_within_the_cap():
+    """The backtester's "everything" must not exceed what a generator will make."""
+    from quantdesk.backtest import ReplayProvider
+    from quantdesk.data.synthetic import SyntheticProvider
+
+    replay = ReplayProvider(SyntheticProvider(), ["AAPL"])
+    assert len(replay.full_history("AAPL")) <= SyntheticProvider.MAX_BARS

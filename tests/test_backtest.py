@@ -6,7 +6,7 @@ just come out better. Everything else in this file is secondary to that.
 """
 
 import math
-from datetime import date
+from datetime import date, timedelta
 
 import numpy as np
 import pandas as pd
@@ -20,6 +20,13 @@ from quantdesk.data import get_provider
 from quantdesk.data.base import DataProvider, Instrument
 
 SYMBOLS = ["SPY", "QQQ", "AAPL", "MSFT", "NVDA", "TSLA"]
+
+#: Tests bound their window explicitly rather than inheriting whatever history
+#: the provider happens to return. Otherwise a change to how much data a
+#: provider serves silently changes how long the suite takes - which is exactly
+#: how this file went from seconds to minutes once the backtester started
+#: asking for full history.
+WINDOW_START = date.today() - timedelta(days=900)
 
 
 @pytest.fixture(scope="module")
@@ -47,10 +54,12 @@ def test_extending_the_end_date_cannot_change_earlier_results(provider):
     different ends must produce an identical overlapping equity curve.
     """
     common = dict(symbols=SYMBOLS, starting_cash=100_000.0,
-                  risk_profile="moderate", max_new_ideas=3, scan_every=5)
+                  risk_profile="moderate", max_new_ideas=3, scan_every=5,
+                  start=WINDOW_START)
 
     replay = ReplayProvider(provider, SYMBOLS)
     sessions = [ts.date() for ts in replay.full_history("SPY").index]
+    sessions = [d for d in sessions if d >= WINDOW_START]
     early_end = sessions[-120]
 
     short = Backtester(provider, BacktestConfig(end=early_end, **common)).run()
@@ -192,7 +201,8 @@ def test_buy_and_hold_handles_missing_data():
 @pytest.fixture(scope="module")
 def result(provider):
     config = BacktestConfig(symbols=SYMBOLS, starting_cash=100_000.0,
-                            risk_profile="moderate", max_new_ideas=3, scan_every=10)
+                            risk_profile="moderate", max_new_ideas=3,
+                            scan_every=10, start=WINDOW_START)
     return Backtester(provider, config).run()
 
 
@@ -253,7 +263,8 @@ def test_small_sample_is_called_out():
 
 
 def test_missing_symbols_are_reported_not_silently_dropped(provider):
-    config = BacktestConfig(symbols=["AAPL", "NOT_A_REAL_TICKER_XYZ"], scan_every=25)
+    config = BacktestConfig(symbols=["AAPL", "NOT_A_REAL_TICKER_XYZ"],
+                            scan_every=25, start=WINDOW_START)
 
     class Partial(DataProvider):
         name = "partial"
