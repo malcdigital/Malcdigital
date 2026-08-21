@@ -371,6 +371,13 @@ def score_symbol(
         vetoes.append("the trend is down - the desk does not buy falling markets")
     if direction == "short" and trend.is_bullish:
         vetoes.append("the trend is up - the desk does not short rising markets")
+    if setup in profile.disabled_setups:
+        # A setup this profile has switched off. See RiskProfile.disabled_setups
+        # for why each one is there - it is a decision taken from a backtest,
+        # not a property of the market, so it is named and reversible.
+        vetoes.append(
+            f"the {setup} setup is disabled for the {profile.name} profile"
+        )
     if trend.is_choppy and setup in ("breakout", "breakdown"):
         vetoes.append(
             f"ADX below 20: {setup}s fail in directionless markets"
