@@ -156,6 +156,13 @@ class BacktestConfig:
     scan_every: int = 1
     """Sessions between idea scans. Positions are still managed every session."""
 
+    profile_overrides: dict = field(default_factory=dict)
+    """Risk-profile settings changed for this run only, e.g. {"allow_short": False}.
+
+    Recorded on the config so the report can say what was changed - a backtest
+    run under altered rules that does not say so is worse than no backtest.
+    """
+
     benchmark: str = BENCHMARK
     news: bool = False
     """Historical news is not available from the free feeds, and scoring today's
@@ -318,6 +325,7 @@ class Backtester:
         self.config = config
         self.settings = settings or Settings(risk_profile=config.risk_profile)
         self.settings.risk_profile = config.risk_profile
+        self.settings.profile_overrides = dict(config.profile_overrides)
         self.settings.starting_cash = config.starting_cash
         self.settings.news_enabled = config.news
         # Ideas are executed directly: an approval queue has no meaning when

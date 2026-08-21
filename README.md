@@ -431,24 +431,42 @@ an index is expressed by **buying a liquid inverse ETF** (SPY → SH, QQQ → PS
 — something a cash account can actually hold, with the loss capped at what you
 put in.
 
-**One short setup is switched off.** `rally` — selling a bounce into resistance
-inside a downtrend — was the only setup that lost money over a 2017–2023 fit
-window: −0.31R across 83 positions while every other setup was positive. It is
-also the catch-all for any bearish candidate not near a breakdown, so it
-collects the least specific short ideas the scanner produces.
+**A negative result worth recording.** `rally` — selling a bounce into
+resistance inside a downtrend — was the only setup that lost money over a
+2017–2023 fit window: −0.31R across 83 positions. Switching it off made every
+measure worse: expectancy $75.13 → $71.50, Sharpe 0.74 → 0.69, profit factor
+1.33 → 1.31.
 
-The other short setup, `breakdown`, made money over the same window, so this is
-not a verdict on shorting. It lives in `RiskProfile.disabled_setups` — named
-rather than deleted, so the classifier still labels these candidates, the report
-still counts what was skipped, and the decision reverses by editing one tuple:
+The re-run showed why. Shorts are capped by `max_short_positions`, so vetoing
+rallies freed slots rather than removing exposure, and marginal `breakdown`
+candidates that previously couldn't get one took them instead — `breakdown`
+went from 47 trades at +0.11R to 80 at −0.03R. Across both runs the short book
+lost $3,481 then $3,499: the same money, 38% fewer trades, a different label
+on it.
 
-```python
-profile = dataclasses.replace(get_profile("moderate"), disabled_setups=())
+So a per-setup average can be an artefact of what competes for a slot rather
+than a property of the setup, and −0.31R over 83 trades cannot tell those
+apart. `RiskProfile.disabled_setups` remains — it's how that experiment gets
+run — but defaults to empty.
+
+## Changing the rules for one run
+
+```bash
+quantdesk backtest --provider csv --start 2017-09-01 --end 2026-08-20 --no-shorts
 ```
 
-Treat it as provisional. It is roughly 2.2 standard errors from zero, and it was
-found on the window it was measured on — which is exactly the kind of finding
-the holdout above exists to test.
+Overrides a risk-profile setting for a single backtest without editing code.
+The run announces it, in both the text and HTML reports:
+
+```
+  Risk profile  moderate
+  RULES CHANGED allow_short=False
+```
+
+Two rules it follows. **It is never written to your config** — a switch flipped
+for an experiment must not silently become what the live desk trades on. And a
+misspelled setting **fails loudly** rather than being ignored, because silently
+dropping it would produce a run reporting a change it did not make.
 
 ## Market regime and sector rotation
 
@@ -539,6 +557,7 @@ quantdesk run --strict             # one trading day + report, real data only
 quantdesk fetch --years 10          # save history for offline, repeatable tests
 quantdesk backtest --max-symbols 20   # test the rules against history
 quantdesk backtest --split         # hold out the last third, sealed
+quantdesk backtest --no-shorts     # long-only, this run only
 quantdesk serve                    # dashboard with charts at localhost:8000
 quantdesk approve --list           # review queued ideas in the terminal
 quantdesk run --email --webhook    # and deliver it

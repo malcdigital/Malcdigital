@@ -89,25 +89,30 @@ class RiskProfile:
     """Concurrent shorts. Kept well below the long cap - a short book that all
     moves together in a squeeze is how accounts blow up."""
 
-    disabled_setups: tuple[str, ...] = ("rally",)
+    disabled_setups: tuple[str, ...] = ()
     """Setups the desk will not trade, whatever else the signal says.
 
-    "rally" - selling a bounce into resistance inside a downtrend - is the only
-    setup that lost money over the 2017-2023 fit window: -0.31R across 83
-    positions, about -$4,300, while every other setup was positive. The other
-    short setup, "breakdown", made money over the same window, so this is not a
-    verdict on shorting in general.
+    Empty by default, and the reason is worth keeping.
 
-    Two reasons to act on it rather than treat it as noise. It is roughly 2.2
-    standard errors from zero, which is suggestive rather than conclusive. And
-    it has a mechanism: shorting strength in a market that rose for most of the
-    period is fighting the tide, and this setup is also the catch-all for any
-    bearish-trend candidate that is not near a breakdown, so it collects the
-    least specific short ideas the scanner produces.
+    Over a 2017-2023 fit window "rally" - selling a bounce into resistance
+    inside a downtrend - was the only setup that lost money: -0.31R across 83
+    positions, about -$4,300, while every other setup was positive. Switching
+    it off made every measure worse: expectancy $75.13 to $71.50, Sharpe 0.74
+    to 0.69, profit factor 1.33 to 1.31.
 
-    Named rather than deleted so the classifier still labels these candidates
-    and the report still counts what was skipped - and so this can be reversed
-    by editing one tuple when it turns out to be hindsight.
+    What the re-run showed is that the loss did not belong to the setup. Shorts
+    are capped by max_short_positions, so vetoing rallies freed slots rather
+    than removing exposure, and marginal "breakdown" candidates that previously
+    could not get one took them instead: breakdown went from 47 trades at
+    +0.11R to 80 at -0.03R. Across the two runs the short book lost $3,481 and
+    then $3,499 - the same money, with 38% fewer trades and a different label
+    on it.
+
+    A per-setup average can therefore be an artefact of what competes for a
+    slot rather than a property of the setup, and -0.31R over 83 trades was not
+    enough to tell those apart. The mechanism stays because it is useful for
+    running that kind of experiment; the default is empty because the one
+    experiment it has run said so.
     """
 
     def size_position(
@@ -313,9 +318,33 @@ class Settings:
     def config_path(self) -> Path:
         return self.home / "config.json"
 
+    profile_overrides: dict[str, Any] = field(default_factory=dict)
+    """Per-run changes to the resolved risk profile, e.g. {"allow_short": False}.
+
+    Exists so an experiment can be run from the command line instead of by
+    editing a profile - the last change made here was reverted because the
+    result was worse, and having to edit code to find that out is how a bad
+    idea stays in a codebase longer than it should.
+
+    Deliberately not persisted by to_dict: a switch flipped for one backtest
+    must not silently become the setting the live desk trades on.
+    """
+
     @property
     def profile(self) -> RiskProfile:
-        return get_profile(self.risk_profile)
+        base = get_profile(self.risk_profile)
+        if not self.profile_overrides:
+            return base
+        import dataclasses
+
+        unknown = set(self.profile_overrides) - {
+            f.name for f in dataclasses.fields(base)
+        }
+        if unknown:
+            raise ValueError(
+                f"unknown risk-profile setting(s): {', '.join(sorted(unknown))}"
+            )
+        return dataclasses.replace(base, **self.profile_overrides)
 
     def ensure_dirs(self) -> None:
         for d in (self.home, self.cache_dir, self.reports_dir):
@@ -325,6 +354,9 @@ class Settings:
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
         d["home"] = str(self.home)
+        # See profile_overrides: a one-run experiment must not be written into
+        # the config the live desk reads back.
+        d.pop("profile_overrides", None)
         return d
 
     def save(self) -> None:

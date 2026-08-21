@@ -28,6 +28,12 @@ def to_text(result: BacktestResult, width: int = 78) -> str:
     L.append(f"  Sessions      {result.sessions:,} ({result.scanned_sessions:,} scans)")
     L.append(f"  Universe      {len(config.symbols)} symbols")
     L.append(f"  Risk profile  {config.risk_profile}")
+    if getattr(config, "profile_overrides", None):
+        # A run under altered rules that does not say so is worse than no run:
+        # the numbers get compared against a baseline they no longer share.
+        changed = ", ".join(f"{k}={v}" for k, v in
+                            sorted(config.profile_overrides.items()))
+        L.append(f"  RULES CHANGED {changed}")
     L.append(f"  Starting cash ${config.starting_cash:,.0f}")
     L.append(f"  Ran in        {result.elapsed_seconds:.1f}s")
 
@@ -134,6 +140,15 @@ def to_html(result: BacktestResult) -> str:
 
     breakdown_html = _breakdown_html(analyze_trades(result.trades))
     verdict_html = "".join(f"<li>{E(line)}</li>" for line in verdict(result))
+    overrides_html = ""
+    if getattr(config, "profile_overrides", None):
+        changed = ", ".join(f"{k}={v}" for k, v in
+                            sorted(config.profile_overrides.items()))
+        overrides_html = (
+            f"<div class='warn'><strong>Rules changed for this run:</strong> "
+            f"{E(changed)}. Not comparable with a run under the standard "
+            f"profile.</div>"
+        )
     warnings_html = "".join(
         f"<div class='warn'>{E(w)}</div>" for w in result.warnings
     )
@@ -182,6 +197,7 @@ td.barcell{{width:45%}}
 <h1>Backtest</h1>
 <p class="muted">{E(period)} &middot; {result.sessions:,} sessions &middot;
 {len(config.symbols)} symbols &middot; {E(config.risk_profile)} risk</p>
+{overrides_html}
 {warnings_html}
 
 <div class="grid">
