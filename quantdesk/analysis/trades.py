@@ -25,14 +25,18 @@ TRAILING = "trailing stop (in profit)"
 BREAKEVEN = "stopped at breakeven"
 STOP = "stop loss"
 GAP_STOP = "gapped through stop"
+GAP_TRAILED = "gapped through trailed stop"
 TIME_STOP = "time stop"
 OTHER = "other"
 
 #: Ordered worst-to-best for reporting, so the eye lands on the losses first.
-EXIT_ORDER = [TARGET, TRAILING, BREAKEVEN, TIME_STOP, STOP, GAP_STOP, OTHER]
+EXIT_ORDER = [TARGET, TRAILING, BREAKEVEN, TIME_STOP, GAP_TRAILED, STOP, GAP_STOP,
+              OTHER]
 
 
-def classify_exit(reason: str, r_multiple: float | None) -> str:
+def classify_exit(
+    reason: str, r_multiple: float | None, stop_trailed: bool = False
+) -> str:
     """Bucket an exit by how it ended.
 
     A trailing stop and an original stop both record "stop loss hit", because
@@ -49,7 +53,11 @@ def classify_exit(reason: str, r_multiple: float | None) -> str:
     if "time stop" in text:
         return TIME_STOP
     if "gapped through" in text:
-        return GAP_STOP
+        # Through the original stop is a loss beyond what was planned. Through a
+        # stop already trailed into profit is giving some of that profit back.
+        # Averaging them together produced a "gap" bucket reading better than a
+        # planned stop, which is nonsense on its face.
+        return GAP_TRAILED if stop_trailed else GAP_STOP
     if "target" in text and "reached" in text and "without" not in text:
         return TARGET
     if "stop" in text:
@@ -64,6 +72,120 @@ def classify_exit(reason: str, r_multiple: float | None) -> str:
             return TRAILING
         return STOP
     return OTHER
+
+
+@dataclass
+class RoundTrip:
+    """One position from entry to close, however many exits that took.
+
+    Reporting per exit *event* silently compares unlike things: taking half off
+    at a target is one row and closing the remainder at a stop is another, so
+    "average win" is measured on part-positions while "average loss" is measured
+    on whole ones. That alone can make a working design look broken - and did.
+
+    R is weighted by the share of the position each exit closed, so one number
+    describes what the position actually returned.
+    """
+
+    key: str
+    symbol: str = ""
+    direction: str = "long"
+    setup: str = ""
+    pnl: float = 0.0
+    r_multiple: float | None = None
+    shares_exited: int = 0
+    shares_entered: int = 0
+    exits: int = 0
+    final_exit: str = OTHER
+    took_partial_profit: bool = False
+    holding_days: int | None = None
+
+    @property
+    def fully_closed(self) -> bool:
+        """False when part of the position was still open at the end of the run.
+
+        An unfinished position is not a result yet; counting it as one would
+        book its realised half and ignore the open remainder.
+        """
+        if self.shares_entered <= 0:
+            return True  # no entry record to compare against; assume complete
+        return self.shares_exited >= self.shares_entered
+
+    @property
+    def is_win(self) -> bool:
+        return self.pnl > 0
+
+
+def build_round_trips(trades: list) -> list[RoundTrip]:
+    """Collapse exit events into one record per position."""
+    entries: dict = {}
+    groups: dict = {}
+    order: list = []
+    anonymous = 0
+
+    for trade in trades:
+        pid = getattr(trade, "position_id", None)
+        is_exit = getattr(trade, "is_exit", False)
+
+        if not is_exit:
+            if pid is not None:
+                entries[pid] = entries.get(pid, 0) + int(trade.shares)
+            continue
+
+        if pid is None:
+            # No position to group by - treat it as its own round trip rather
+            # than lumping every such trade together under a shared null key.
+            anonymous += 1
+            key = f"anon-{anonymous}"
+        else:
+            key = f"pos-{pid}"
+
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(trade)
+
+    out: list[RoundTrip] = []
+    for key in order:
+        legs = sorted(groups[key], key=lambda t: (t.trade_date, t.id or 0))
+        first = legs[0]
+        pid = getattr(first, "position_id", None)
+
+        trip = RoundTrip(
+            key=key,
+            symbol=first.symbol,
+            direction=getattr(first, "direction", "long") or "long",
+            setup=getattr(first, "setup", "") or "",
+            shares_entered=entries.get(pid, 0),
+            exits=len(legs),
+        )
+
+        weighted_r = 0.0
+        weighted_shares = 0
+        for leg in legs:
+            trip.pnl += float(leg.realized_pnl or 0.0)
+            trip.shares_exited += int(leg.shares)
+            r = getattr(leg, "r_multiple", None)
+            if r is not None:
+                weighted_r += float(r) * int(leg.shares)
+                weighted_shares += int(leg.shares)
+
+        if weighted_shares:
+            trip.r_multiple = round(weighted_r / weighted_shares, 4)
+
+        last = legs[-1]
+        trip.final_exit = classify_exit(
+            last.reason, getattr(last, "r_multiple", None),
+            bool(getattr(last, "stop_trailed", False)),
+        )
+        trip.holding_days = getattr(last, "holding_days", None)
+        trip.took_partial_profit = len(legs) > 1 and any(
+            classify_exit(leg.reason, getattr(leg, "r_multiple", None),
+                          bool(getattr(leg, "stop_trailed", False))) == TARGET
+            for leg in legs[:-1]
+        )
+        out.append(trip)
+    return out
 
 
 @dataclass
@@ -99,6 +221,12 @@ class TradeAnalysis:
     best_r: float = 0.0
     worst_r: float = 0.0
     missing_r: int = 0
+    multi_exit: int = 0
+    partial_profit: int = 0
+    open_at_end: int = 0
+    avg_win_dollars: float = 0.0
+    avg_loss_dollars: float = 0.0
+    win_rate: float = 0.0
     by_setup: dict[str, ExitBucket] = field(default_factory=dict)
     by_direction: dict[str, ExitBucket] = field(default_factory=dict)
 
@@ -122,6 +250,15 @@ class TradeAnalysis:
                 f"Only {self.closed} closed trades - too few to read anything into "
                 "the distribution."
             ]
+
+        if self.multi_exit:
+            out.append(
+                f"{self.multi_exit:,} of {self.closed:,} positions closed in "
+                "stages. Each is counted once here, with R weighted by the share "
+                "of the position each exit closed - reporting per exit event "
+                "instead compares part-positions against whole ones and can make "
+                "a working design look broken."
+            )
 
         target_share = self.share(TARGET)
         time_share = self.share(TIME_STOP)
@@ -191,12 +328,22 @@ class TradeAnalysis:
             )
 
         gap_bucket = self.buckets.get(GAP_STOP)
-        if gap_bucket and gap_bucket.count > self.closed * 0.05:
+        if gap_bucket and gap_bucket.count > self.closed * 0.03:
             out.append(
-                f"{gap_bucket.count} trades ({self.share(GAP_STOP):.0f}%) gapped "
-                f"through their stop, averaging {gap_bucket.avg_r:+.2f}R against a "
-                "planned -1R. This is the risk a stop cannot control, and it is "
-                "why realised losses exceed planned ones."
+                f"{gap_bucket.count} positions ({self.share(GAP_STOP):.0f}%) gapped "
+                f"through their original stop, averaging {gap_bucket.avg_r:+.2f}R "
+                "against a planned -1R. This is the risk a stop cannot control: "
+                "price is simply not available at your price when the market "
+                "reopens."
+            )
+
+        trailed_gap = self.buckets.get(GAP_TRAILED)
+        if trailed_gap and trailed_gap.count:
+            out.append(
+                f"{trailed_gap.count} positions gapped through a stop that had "
+                f"already been trailed, averaging {trailed_gap.avg_r:+.2f}R. Those "
+                "gave back profit rather than exceeding the planned loss - a "
+                "different event from the line above, and not a failure."
             )
         return out
 
@@ -229,12 +376,18 @@ _R_BINS = [
 
 
 def analyze_trades(trades: list) -> TradeAnalysis:
-    """Summarise how closed trades ended."""
+    """Summarise closed positions.
+
+    Works on round trips, not exit events: a position that takes half off at a
+    target and stops the remainder is one trade with one outcome, not a win and
+    a loss that get averaged separately against each other.
+    """
     analysis = TradeAnalysis()
-    closed = [t for t in trades if getattr(t, "is_exit", False)
-              and t.realized_pnl is not None]
-    analysis.closed = len(closed)
-    if not closed:
+    all_trips = build_round_trips(trades)
+    trips = [t for t in all_trips if t.fully_closed]
+    analysis.closed = len(trips)
+    analysis.open_at_end = len(all_trips) - len(trips)
+    if not trips:
         return analysis
 
     analysis.r_histogram = {label: 0 for label, _, _ in _R_BINS}
@@ -243,58 +396,76 @@ def analyze_trades(trades: list) -> TradeAnalysis:
     win_days: list[int] = []
     loss_days: list[int] = []
 
-    for trade in closed:
-        r = trade.r_multiple
-        reason = classify_exit(trade.reason, r)
-
-        bucket = _bucket_for(analysis.buckets, reason)
+    for trip in trips:
+        bucket = _bucket_for(analysis.buckets, trip.final_exit)
         bucket.count += 1
-        bucket.total_pnl += float(trade.realized_pnl)
-        if r is not None:
-            bucket.r_values.append(float(r))
-        if trade.holding_days is not None:
-            bucket.holding_days.append(int(trade.holding_days))
+        bucket.total_pnl += trip.pnl
+        if trip.r_multiple is not None:
+            bucket.r_values.append(trip.r_multiple)
+        if trip.holding_days is not None:
+            bucket.holding_days.append(trip.holding_days)
 
         for group, key in (
-            (analysis.by_setup, trade.setup or "unknown"),
-            (analysis.by_direction, trade.direction or "long"),
+            (analysis.by_setup, trip.setup or "unknown"),
+            (analysis.by_direction, trip.direction or "long"),
         ):
             sub = _bucket_for(group, key)
             sub.count += 1
-            sub.total_pnl += float(trade.realized_pnl)
-            if r is not None:
-                sub.r_values.append(float(r))
+            sub.total_pnl += trip.pnl
+            if trip.r_multiple is not None:
+                sub.r_values.append(trip.r_multiple)
 
-        if r is None:
+        if trip.exits > 1:
+            analysis.multi_exit += 1
+        if trip.took_partial_profit:
+            analysis.partial_profit += 1
+
+        if trip.r_multiple is None:
             analysis.missing_r += 1
         else:
             for label, low, high in _R_BINS:
-                if low <= r < high:
+                if low <= trip.r_multiple < high:
                     analysis.r_histogram[label] += 1
                     break
 
-        if reason == BREAKEVEN:
+        if trip.final_exit == BREAKEVEN:
             pass  # a scratch belongs in neither the win nor the loss average
-        elif float(trade.realized_pnl) > 0:
-            if r is not None:
-                win_r.append(float(r))
-            if trade.holding_days is not None:
-                win_days.append(int(trade.holding_days))
+        elif trip.pnl > 0:
+            if trip.r_multiple is not None:
+                win_r.append(trip.r_multiple)
+            if trip.holding_days is not None:
+                win_days.append(trip.holding_days)
         else:
-            if r is not None:
-                loss_r.append(float(r))
-            if trade.holding_days is not None:
-                loss_days.append(int(trade.holding_days))
+            if trip.r_multiple is not None:
+                loss_r.append(trip.r_multiple)
+            if trip.holding_days is not None:
+                loss_days.append(trip.holding_days)
 
     analysis.avg_win_r = sum(win_r) / len(win_r) if win_r else 0.0
     analysis.avg_loss_r = sum(loss_r) / len(loss_r) if loss_r else 0.0
     analysis.winner_days = sum(win_days) / len(win_days) if win_days else 0.0
     analysis.loser_days = sum(loss_days) / len(loss_days) if loss_days else 0.0
 
+    wins = [t.pnl for t in trips if t.pnl > 0]
+    losses = [t.pnl for t in trips if t.pnl <= 0]
+    analysis.avg_win_dollars = sum(wins) / len(wins) if wins else 0.0
+    analysis.avg_loss_dollars = abs(sum(losses) / len(losses)) if losses else 0.0
+    analysis.win_rate = len(wins) / len(trips) * 100.0 if trips else 0.0
+
     all_r = win_r + loss_r
     analysis.best_r = max(all_r) if all_r else 0.0
     analysis.worst_r = min(all_r) if all_r else 0.0
     return analysis
+
+
+def _column_width(labels, *extra: str, minimum: int = 26) -> int:
+    """Width of a label column, wide enough for its longest entry.
+
+    Hard-coded widths quietly break alignment the moment a label is renamed or
+    a bucket is added, and a misaligned table is easy to misread.
+    """
+    longest = max((len(str(x)) for x in (*labels, *extra)), default=0)
+    return max(minimum, longest + 1)
 
 
 def to_text(analysis: TradeAnalysis, width: int = 78) -> str:
@@ -303,31 +474,43 @@ def to_text(analysis: TradeAnalysis, width: int = 78) -> str:
     if analysis.closed == 0:
         return "TRADE BREAKDOWN\n" + thin + "\n  No closed trades yet."
 
+    exit_col = _column_width([b.reason for b in analysis.ordered_buckets],
+                             "HOW IT ENDED")
     L = ["TRADE BREAKDOWN", thin,
-         f"  {'HOW IT ENDED':<26}{'COUNT':>7}{'SHARE':>8}{'AVG R':>8}"
+         f"  {analysis.closed:,} closed positions"
+         + (f" ({analysis.multi_exit:,} closed in stages, "
+            f"{analysis.partial_profit:,} after banking a target)"
+            if analysis.multi_exit else "")
+         + (f"; {analysis.open_at_end:,} still open at the end and excluded"
+            if analysis.open_at_end else ""),
+         "",
+         f"  {'HOW IT ENDED':<{exit_col}}{'COUNT':>7}{'SHARE':>8}{'AVG R':>8}"
          f"{'AVG DAYS':>10}{'TOTAL P&L':>14}"]
 
     for bucket in analysis.ordered_buckets:
         share = bucket.count / analysis.closed * 100.0
         L.append(
-            f"  {bucket.reason:<26}{bucket.count:>7,}{share:>7.1f}%"
+            f"  {bucket.reason:<{exit_col}}{bucket.count:>7,}{share:>7.1f}%"
             f"{bucket.avg_r:>+8.2f}{bucket.avg_days:>10.0f}"
             f"{bucket.total_pnl:>+14,.0f}"
         )
 
     L += ["", "  RESULT DISTRIBUTION (in R, the risk originally taken)"]
     peak = max(analysis.r_histogram.values()) if analysis.r_histogram else 0
+    bin_col = _column_width(analysis.r_histogram, "(no R recorded)")
     for label, count in analysis.r_histogram.items():
         share = count / analysis.closed * 100.0
         bar = "#" * int(round(count / peak * 28)) if peak else ""
-        L.append(f"  {label:<28}{count:>6,}{share:>7.1f}%  {bar}")
+        L.append(f"  {label:<{bin_col}}{count:>6,}{share:>7.1f}%  {bar}")
     if analysis.missing_r:
-        L.append(f"  {'(no R recorded)':<28}{analysis.missing_r:>6,}")
+        L.append(f"  {'(no R recorded)':<{bin_col}}{analysis.missing_r:>6,}")
 
-    L += ["", f"  Average win {analysis.avg_win_r:+.2f}R held "
-              f"{analysis.winner_days:.0f} days | "
-              f"average loss {analysis.avg_loss_r:+.2f}R held "
-              f"{analysis.loser_days:.0f} days",
+    L += ["",
+          f"  Win rate {analysis.win_rate:.1f}% of positions",
+          f"  Average win {analysis.avg_win_r:+.2f}R "
+          f"(${analysis.avg_win_dollars:,.0f}) held {analysis.winner_days:.0f} days",
+          f"  Average loss {analysis.avg_loss_r:+.2f}R "
+          f"(${analysis.avg_loss_dollars:,.0f}) held {analysis.loser_days:.0f} days",
           f"  Best {analysis.best_r:+.2f}R | worst {analysis.worst_r:+.2f}R"]
 
     if len(analysis.by_direction) > 1:

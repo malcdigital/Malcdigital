@@ -291,6 +291,7 @@ class PaperBroker:
             realized_pnl=round(pnl, 2), position_id=position.id,
             r_multiple=round(position.r_multiple(fill), 4),
             holding_days=position.days_held(as_of),
+            stop_trailed=abs(position.stop_price - position.initial_stop) > 1e-9,
             direction=position.direction, setup=position.setup,
         ))
 

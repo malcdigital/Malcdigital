@@ -243,6 +243,59 @@ Runtime scales with universe × sessions. Roughly 12 symbols over 1,000 sessions
 takes about a minute; `--scan-every 5` scans weekly while still managing
 positions daily, cutting it by most of that.
 
+Every run leaves three files in `~/.quantdesk/reports/`: `backtest.html`,
+`backtest.txt`, and `backtest-trades.csv`. The backtest's database is
+throwaway, so without the CSV the per-trade detail dies with the run and
+looking at it again means replaying everything.
+
+## Why the trades ended
+
+Headline numbers say whether a strategy made money. They do not say why, and
+that is the part that decides what to change.
+
+```bash
+quantdesk trades                                        # the live portfolio
+quantdesk trades --file ~/.quantdesk/reports/backtest-trades.csv
+```
+
+```
+  HOW IT ENDED                  COUNT   SHARE   AVG R  AVG DAYS     TOTAL P&L
+  target reached                    1    1.1%   +1.98        16          +179
+  trailing stop (in profit)        12   13.6%   +1.55        35        +2,278
+  time stop                        19   21.6%   +1.26        62        +3,680
+  stop loss                        49   55.7%   -0.97        16        -9,444
+  gapped through stop               1    1.1%   -1.16         2          -273
+```
+
+**One position is one trade.** A staged exit — half off at the first target,
+the rest at a trailed stop — is two fills but one result, and the R multiple is
+weighted by the share of the position each fill closed.
+
+This matters more than it sounds. Counting exit *events* measures every win on
+a part-position and every loss on a whole one, because winners get scaled out
+of and losers get closed at once. On a real nine-year run that reported an
+average win of $398 against an average loss of $452 — a design that looked
+broken. Aggregated per position the same trades read $411 against $288. The
+distortion was in the measurement, not the strategy.
+
+Two more distinctions the breakdown insists on, because averaging across them
+hides the thing worth knowing:
+
+- **A stop hit in profit is a trailing stop, not a loss.** Trailing works by
+  moving the stop, so both record "stop loss hit"; only the R multiple
+  separates protecting a gain from being wrong. A trail that reached breakeven
+  and stopped out there is a scratch, reported separately again.
+- **Gapping through a stop already trailed into profit is not a disaster.**
+  That gives some profit back. Gapping through the original stop is a loss
+  beyond what was planned. Averaged together the gap bucket read better than a
+  planned stop, which is nonsense on its face.
+
+The findings at the bottom are written to be unwelcome: too few trades reaching
+target, capital recycled by the time stop before the thesis resolves, losers
+held longer than winners. Nothing here searches for better parameters — tuning
+a strategy until its backtest improves, on the same data that produced the
+diagnosis, is how backtests become fiction.
+
 ## The dashboard
 
 ```bash
@@ -410,6 +463,7 @@ quantdesk scan --limit 5 -v        # ideas only, no trading
 quantdesk analyze NVDA             # deep dive on one symbol
 quantdesk status                   # positions and working orders
 quantdesk history                  # the trade log
+quantdesk trades                   # why the closed trades ended as they did
 quantdesk backfill --days 60       # replay past sessions to build history
 quantdesk schedule --install       # run automatically each weekday
 quantdesk profiles                 # explain the risk tiers
@@ -529,7 +583,8 @@ quantdesk/
   diagnostics.py       preflight checks
   notify.py            email / webhook delivery
   data/                providers (Yahoo, Stooq, CSV, synthetic), cache, symbols
-  analysis/            indicators, candlestick patterns, trend, weekly timeframe
+  analysis/            indicators, candlestick patterns, trend, weekly timeframe,
+                       post-trade breakdown
   news/                RSS retrieval, financial sentiment
   strategy/            universes, screener, regime, scoring, risk, trade plans
   broker/              paper simulator, optional Alpaca adapter

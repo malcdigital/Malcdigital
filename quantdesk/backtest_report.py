@@ -104,6 +104,10 @@ def to_html(result: BacktestResult) -> str:
         metrics.total_return_pct - benchmark.total_return_pct if benchmark else 0.0
     )
     gap_class = "up" if gap > 0 else "down"
+    # A benchmark can be missing - the symbol failed to load, or the window had
+    # no overlapping history. Saying so beats crashing the whole report.
+    bench_return = f"{benchmark.total_return_pct:+.1f}%" if benchmark else "n/a"
+    bench_gap = f"{gap:+.1f}%" if benchmark else "n/a"
 
     def compare_row(label: str, a: float, b: float | None, suffix: str = "%") -> str:
         better = b is None or a >= b
@@ -128,6 +132,7 @@ def to_html(result: BacktestResult) -> str:
                     benchmark.sortino if benchmark else None, ""),
     ])
 
+    breakdown_html = _breakdown_html(analyze_trades(result.trades))
     verdict_html = "".join(f"<li>{E(line)}</li>" for line in verdict(result))
     warnings_html = "".join(
         f"<div class='warn'>{E(w)}</div>" for w in result.warnings
@@ -168,6 +173,11 @@ border-radius:8px;padding:10px 12px;margin:12px 0;font-size:14px}}
 footer{{margin-top:26px;padding-top:12px;border-top:1px solid var(--line);
 color:var(--muted);font-size:12px}}
 .overflow{{overflow-x:auto}}
+.bar{{position:relative;height:20px;background:var(--line);border-radius:4px;
+min-width:120px}}
+.bar span{{position:absolute;inset:0 auto 0 0;border-radius:4px;
+background:var(--accent);opacity:.75}}
+td.barcell{{width:45%}}
 </style></head><body><div class="wrap">
 <h1>Backtest</h1>
 <p class="muted">{E(period)} &middot; {result.sessions:,} sessions &middot;
@@ -178,9 +188,9 @@ color:var(--muted);font-size:12px}}
 <div class="stat"><div class="l">Strategy return</div>
   <div class="v {"up" if metrics.total_return_pct > 0 else "down"}">{metrics.total_return_pct:+.1f}%</div></div>
 <div class="stat"><div class="l">Buy &amp; hold</div>
-  <div class="v muted">{benchmark.total_return_pct:+.1f}%</div></div>
+  <div class="v muted">{bench_return}</div></div>
 <div class="stat"><div class="l">Difference</div>
-  <div class="v {gap_class}">{gap:+.1f}%</div></div>
+  <div class="v {gap_class}">{bench_gap}</div></div>
 <div class="stat"><div class="l">Max drawdown</div>
   <div class="v down">{metrics.max_drawdown_pct:.1f}%</div></div>
 <div class="stat"><div class="l">Sharpe</div><div class="v">{metrics.sharpe:.2f}</div></div>
@@ -196,8 +206,74 @@ color:var(--muted);font-size:12px}}
 <div class="card overflow"><table><thead><tr><th>Measure</th><th>Strategy</th>
 <th>Buy &amp; hold</th></tr></thead><tbody>{rows}</tbody></table></div>
 
+{breakdown_html}
 <h2>Verdict</h2>
 <div class="card"><ul class="verdict">{verdict_html}</ul></div>
 
 <footer>{E(DISCLAIMER)}</footer>
 </div></body></html>"""
+
+
+def _breakdown_html(analysis) -> str:
+    """How the trades ended, for the page most people actually open.
+
+    The text report has carried this since it was written; leaving it out of the
+    HTML meant the reader who clicks the file saw the headline number without
+    the one section that explains it.
+    """
+    if not analysis.closed:
+        return ""
+
+    rows = "".join(
+        f"<tr><td>{E(b.reason)}</td><td>{b.count:,}</td>"
+        f"<td>{b.count / analysis.closed * 100.0:.1f}%</td>"
+        f'<td class="{"up" if b.avg_r >= 0 else "down"}">{b.avg_r:+.2f}</td>'
+        f"<td>{b.avg_days:.0f}</td>"
+        f'<td class="{"up" if b.total_pnl >= 0 else "down"}">'
+        f"{b.total_pnl:+,.0f}</td></tr>"
+        for b in analysis.ordered_buckets
+    )
+
+    peak = max(analysis.r_histogram.values()) if analysis.r_histogram else 0
+    bars = "".join(
+        f"<tr><td>{E(label)}</td><td>{count:,}</td>"
+        f"<td>{count / analysis.closed * 100.0:.1f}%</td>"
+        f'<td class="barcell"><div class="bar">'
+        f'<span style="width:{(count / peak * 100.0) if peak else 0:.1f}%"></span>'
+        f"</div></td></tr>"
+        for label, count in analysis.r_histogram.items()
+    )
+
+    staged = (
+        f" &middot; {analysis.multi_exit:,} closed in stages"
+        if analysis.multi_exit else ""
+    )
+    findings = "".join(f"<li>{E(line)}</li>" for line in analysis.findings())
+
+    return f"""
+<h2>How the trades ended</h2>
+<p class="muted">{analysis.closed:,} closed positions{staged} &middot;
+one position counts once, with R weighted by the share each exit closed</p>
+<div class="card overflow"><table><thead><tr><th>Exit</th><th>Count</th>
+<th>Share</th><th>Avg R</th><th>Avg days</th><th>Total P&amp;L</th></tr></thead>
+<tbody>{rows}</tbody></table></div>
+
+<div class="grid" style="margin-top:10px">
+<div class="stat"><div class="l">Win rate</div>
+  <div class="v">{analysis.win_rate:.1f}%</div></div>
+<div class="stat"><div class="l">Average win</div>
+  <div class="v up">{analysis.avg_win_r:+.2f}R</div></div>
+<div class="stat"><div class="l">Average loss</div>
+  <div class="v down">{analysis.avg_loss_r:+.2f}R</div></div>
+<div class="stat"><div class="l">Best / worst</div>
+  <div class="v">{analysis.best_r:+.2f} / {analysis.worst_r:+.2f}R</div></div>
+</div>
+
+<h2>Result distribution</h2>
+<div class="card overflow"><table><thead><tr><th>In R, the risk originally
+taken</th><th>Count</th><th>Share</th><th></th></tr></thead>
+<tbody>{bars}</tbody></table></div>
+
+<h2>What this says</h2>
+<div class="card"><ul class="verdict">{findings}</ul></div>
+"""
