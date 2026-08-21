@@ -108,19 +108,49 @@ def test_holding_periods_split_by_outcome():
 def test_histogram_bins_by_r():
     analysis = analyze_trades([
         exit_trade("gapped through the stop", -2.5),
-        exit_trade("stop loss hit", -1.0),
-        exit_trade("stop loss hit", -0.2),
+        exit_trade("stop loss hit", -1.4),
+        exit_trade("stop loss hit", -1.03),
+        exit_trade("stop loss hit", -0.3),
+        exit_trade("stop loss hit", 0.0, pnl=-2.0),
         exit_trade("time stop", 0.5),
         exit_trade("target $1 reached", 2.5),
         exit_trade("target $1 reached", 5.0),
     ])
     histogram = analysis.r_histogram
-    assert histogram["< -1R (worse than planned)"] == 1
-    assert histogram["-1R to -0.5R"] == 1
-    assert histogram["-0.5R to 0"] == 1
-    assert histogram["0 to +1R"] == 1
+    assert histogram["< -2R (gapped badly)"] == 1
+    assert histogram["-2R to -1.25R (worse than planned)"] == 1
+    assert histogram["-1.25R to -0.75R (stop, as planned)"] == 1
+    assert histogram["-0.75R to -0.05R"] == 1
+    assert histogram["breakeven (-0.05R to +0.05R)"] == 1
+    assert histogram["+0.05R to +1R"] == 1
     assert histogram["+2R to +4R"] == 1
     assert histogram["> +4R"] == 1
+
+
+def test_an_ordinary_stop_is_not_filed_as_worse_than_planned():
+    """Stops fill slightly past their price; -1.03R is a stop working.
+
+    A boundary drawn exactly at -1R files almost every normal stop under
+    "worse than planned" and buries the genuinely bad gap fills beside them.
+    """
+    analysis = analyze_trades([exit_trade("stop loss hit", -1.03) for _ in range(20)])
+    assert analysis.r_histogram["-1.25R to -0.75R (stop, as planned)"] == 20
+    assert analysis.r_histogram["< -2R (gapped badly)"] == 0
+    assert analysis.r_histogram["-2R to -1.25R (worse than planned)"] == 0
+
+
+def test_a_breakeven_scratch_is_not_a_loss():
+    from quantdesk.analysis.trades import BREAKEVEN
+
+    analysis = analyze_trades([
+        exit_trade("stop loss hit", 0.0, pnl=-1.0),
+        exit_trade("target $1 reached", 2.0),
+        exit_trade("stop loss hit", -1.0),
+    ])
+    assert analysis.buckets[BREAKEVEN].count == 1
+    # The scratch must not drag either average.
+    assert analysis.avg_win_r == pytest.approx(2.0)
+    assert analysis.avg_loss_r == pytest.approx(-1.0)
 
 
 def test_missing_r_is_counted_not_dropped():

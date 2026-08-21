@@ -22,13 +22,14 @@ from dataclasses import dataclass, field
 
 TARGET = "target reached"
 TRAILING = "trailing stop (in profit)"
+BREAKEVEN = "stopped at breakeven"
 STOP = "stop loss"
 GAP_STOP = "gapped through stop"
 TIME_STOP = "time stop"
 OTHER = "other"
 
 #: Ordered worst-to-best for reporting, so the eye lands on the losses first.
-EXIT_ORDER = [TARGET, TRAILING, TIME_STOP, STOP, GAP_STOP, OTHER]
+EXIT_ORDER = [TARGET, TRAILING, BREAKEVEN, TIME_STOP, STOP, GAP_STOP, OTHER]
 
 
 def classify_exit(reason: str, r_multiple: float | None) -> str:
@@ -52,7 +53,14 @@ def classify_exit(reason: str, r_multiple: float | None) -> str:
     if "target" in text and "reached" in text and "without" not in text:
         return TARGET
     if "stop" in text:
-        if r_multiple is not None and r_multiple > 0:
+        if r_multiple is None:
+            return STOP
+        # A trail that reached breakeven and then stopped out is a scratch, not
+        # a loss. Counting it as a loss overstates how often the strategy is
+        # wrong, and understates what the trailing rule is doing.
+        if abs(r_multiple) <= 0.05:
+            return BREAKEVEN
+        if r_multiple > 0:
             return TRAILING
         return STOP
     return OTHER
@@ -168,6 +176,14 @@ class TradeAnalysis:
                 "opposite of the intended discipline."
             )
 
+        breakeven_share = self.share(BREAKEVEN)
+        if breakeven_share > 10:
+            out.append(
+                f"{breakeven_share:.0f}% were scratched at breakeven by the trail. "
+                "Those are neither wins nor losses; a high share means the trail "
+                "is arming and then being clipped before the trade goes anywhere."
+            )
+
         if stop_share > 55:
             out.append(
                 f"{stop_share:.0f}% were stopped out at a loss. Either the stops sit "
@@ -191,13 +207,21 @@ def _bucket_for(store: dict[str, ExitBucket], key: str) -> ExitBucket:
     return store[key]
 
 
-#: Histogram edges in R. Chosen around the design's own decision points: -1R is
-#: a stop working as planned, 2R and 4R are where targets sit.
+#: Histogram edges in R, placed around the design's own decision points: a stop
+#: is meant to cost 1R and targets sit at 2R and 4R.
+#:
+#: The band around -1R is deliberately wide. Stops fill slightly past their
+#: price because of slippage, so a perfectly ordinary stop lands at -1.02 or
+#: -1.06R. A boundary drawn exactly at -1R therefore files almost every normal
+#: stop under "worse than planned", which reads as alarming and buries the
+#: genuinely bad fills - the gaps at -2R and beyond - in the same bucket.
 _R_BINS = [
-    ("< -1R (worse than planned)", -math.inf, -1.0),
-    ("-1R to -0.5R", -1.0, -0.5),
-    ("-0.5R to 0", -0.5, 0.0),
-    ("0 to +1R", 0.0, 1.0),
+    ("< -2R (gapped badly)", -math.inf, -2.0),
+    ("-2R to -1.25R (worse than planned)", -2.0, -1.25),
+    ("-1.25R to -0.75R (stop, as planned)", -1.25, -0.75),
+    ("-0.75R to -0.05R", -0.75, -0.05),
+    ("breakeven (-0.05R to +0.05R)", -0.05, 0.05),
+    ("+0.05R to +1R", 0.05, 1.0),
     ("+1R to +2R", 1.0, 2.0),
     ("+2R to +4R", 2.0, 4.0),
     ("> +4R", 4.0, math.inf),
@@ -249,7 +273,9 @@ def analyze_trades(trades: list) -> TradeAnalysis:
                     analysis.r_histogram[label] += 1
                     break
 
-        if float(trade.realized_pnl) > 0:
+        if reason == BREAKEVEN:
+            pass  # a scratch belongs in neither the win nor the loss average
+        elif float(trade.realized_pnl) > 0:
             if r is not None:
                 win_r.append(float(r))
             if trade.holding_days is not None:
