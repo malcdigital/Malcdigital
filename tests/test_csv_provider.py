@@ -6,6 +6,8 @@ the free endpoints break often enough that fetching once beats fetching on
 every run.
 """
 
+from datetime import date, timedelta
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -178,7 +180,8 @@ def test_backtest_runs_entirely_from_csv(tmp_path, source):
 
     result = Backtester(
         CsvProvider(tmp_path),
-        BacktestConfig(symbols=symbols, scan_every=15, max_new_ideas=2),
+        BacktestConfig(symbols=symbols, scan_every=15, max_new_ideas=2,
+                       start=date.today() - timedelta(days=700)),
     ).run()
 
     assert result.sessions > 100
