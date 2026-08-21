@@ -261,9 +261,15 @@ def compute_metrics(
         exposure_pct=round(exposure_sessions / max(1, len(values)) * 100.0, 1),
     )
 
-    closed = [t for t in (trades or []) if t.realized_pnl is not None]
+    # Per position, not per exit. Winners get scaled out of and losers get
+    # closed in one go, so counting exit events measures every win on a
+    # part-position and every loss on a whole one - which inverted the win/loss
+    # ratio on a nine-year run and made a working exit design look broken.
+    from quantdesk.analysis.trades import build_round_trips
+
+    closed = [t for t in build_round_trips(trades or []) if t.fully_closed]
     if closed:
-        pnls = [float(t.realized_pnl) for t in closed]
+        pnls = [t.pnl for t in closed]
         wins = [p for p in pnls if p > 0]
         losses = [p for p in pnls if p <= 0]
         gross_win, gross_loss = sum(wins), abs(sum(losses))

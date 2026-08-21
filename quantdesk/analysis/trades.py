@@ -265,11 +265,28 @@ class TradeAnalysis:
         trailing_share = self.share(TRAILING)
         stop_share = self.share(STOP) + self.share(GAP_STOP)
 
-        if target_share < 15:
+        # Counting only positions whose *final* exit was a target misses every
+        # position that banked the first target and left on something else -
+        # which is most of them, by design. Reporting 0.6% when 28% touched a
+        # target is not a small error: it points at the entries when the real
+        # story is what happens after the first target is hit.
+        touched = self.buckets.get(TARGET, ExitBucket(TARGET)).count + \
+            self.partial_profit
+        touched_share = touched / self.closed * 100.0 if self.closed else 0.0
+
+        if touched_share < 15:
             out.append(
-                f"Only {target_share:.0f}% of trades reached a profit target. The "
-                "plans are built around 2R and 4R targets, so most positions are "
-                "being closed by something else before the thesis plays out."
+                f"Only {touched_share:.0f}% of positions reached a profit target "
+                "at all. The plans are built around 2R and 4R targets, so most "
+                "are being closed by something else before the thesis plays out."
+            )
+        elif target_share < 5:
+            out.append(
+                f"{touched_share:.0f}% of positions banked the first target, but "
+                f"only {target_share:.1f}% ran all the way to the second. The "
+                "remainder is being closed by a stop or the clock, so the far "
+                "target is doing almost no work - the trailing rule and the time "
+                "stop are deciding what these trades earn."
             )
 
         if time_share > 20:
