@@ -431,6 +431,25 @@ an index is expressed by **buying a liquid inverse ETF** (SPY → SH, QQQ → PS
 — something a cash account can actually hold, with the loss capped at what you
 put in.
 
+**One short setup is switched off.** `rally` — selling a bounce into resistance
+inside a downtrend — was the only setup that lost money over a 2017–2023 fit
+window: −0.31R across 83 positions while every other setup was positive. It is
+also the catch-all for any bearish candidate not near a breakdown, so it
+collects the least specific short ideas the scanner produces.
+
+The other short setup, `breakdown`, made money over the same window, so this is
+not a verdict on shorting. It lives in `RiskProfile.disabled_setups` — named
+rather than deleted, so the classifier still labels these candidates, the report
+still counts what was skipped, and the decision reverses by editing one tuple:
+
+```python
+profile = dataclasses.replace(get_profile("moderate"), disabled_setups=())
+```
+
+Treat it as provisional. It is roughly 2.2 standard errors from zero, and it was
+found on the window it was measured on — which is exactly the kind of finding
+the holdout above exists to test.
+
 ## Market regime and sector rotation
 
 Grading signals in isolation is how a book ends up fully invested at a top: every

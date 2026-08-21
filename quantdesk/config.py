@@ -89,6 +89,27 @@ class RiskProfile:
     """Concurrent shorts. Kept well below the long cap - a short book that all
     moves together in a squeeze is how accounts blow up."""
 
+    disabled_setups: tuple[str, ...] = ("rally",)
+    """Setups the desk will not trade, whatever else the signal says.
+
+    "rally" - selling a bounce into resistance inside a downtrend - is the only
+    setup that lost money over the 2017-2023 fit window: -0.31R across 83
+    positions, about -$4,300, while every other setup was positive. The other
+    short setup, "breakdown", made money over the same window, so this is not a
+    verdict on shorting in general.
+
+    Two reasons to act on it rather than treat it as noise. It is roughly 2.2
+    standard errors from zero, which is suggestive rather than conclusive. And
+    it has a mechanism: shorting strength in a market that rose for most of the
+    period is fighting the tide, and this setup is also the catch-all for any
+    bearish-trend candidate that is not near a breakdown, so it collects the
+    least specific short ideas the scanner produces.
+
+    Named rather than deleted so the classifier still labels these candidates
+    and the report still counts what was skipped - and so this can be reversed
+    by editing one tuple when it turns out to be hindsight.
+    """
+
     def size_position(
         self, equity: float, entry: float, stop: float, direction: str = "long"
     ) -> tuple[int, str]:

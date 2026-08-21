@@ -187,3 +187,66 @@ def test_volatility_ceiling_vetoes_wild_instruments():
     )
     report = score_symbol("WILD", frame, get_profile("conservative"))
     assert any("volatility" in v for v in report.vetoes)
+
+
+# --- disabled setups ----------------------------------------------------------
+def _downtrending_bars(days=400, seed=0):
+    """A steady decline, which is what produces short setups."""
+    rng = np.random.default_rng(seed)
+    close = 300.0 * np.exp(np.cumsum(rng.normal(-0.0016, 0.012, days)))
+    idx = pd.bdate_range(end=pd.Timestamp("2024-06-28"), periods=days)
+    high = close * (1 + np.abs(rng.normal(0, 0.006, days)))
+    low = close * (1 - np.abs(rng.normal(0, 0.006, days)))
+    return pd.DataFrame({
+        "open": np.r_[close[0], close[:-1]], "high": high, "low": low,
+        "close": close, "volume": rng.integers(4_000_000, 9_000_000, days),
+    }, index=idx)
+
+
+def test_a_rally_candidate_is_vetoed_rather_than_scored_down():
+    """It has to be a hard veto, not a penalty.
+
+    A penalty lets a strong-enough signal through, which puts the setup back in
+    the book precisely on the days it looks most attractive - and those are not
+    the days it loses least.
+    """
+    from quantdesk.strategy.signals import score_symbol
+
+    bars = _downtrending_bars()
+    report = score_symbol("TEST", bars, get_profile("aggressive"))
+    # A skipped test is not a test: this fixture is chosen so the classifier
+    # really does produce a rally, and the assertion below has something to bite
+    # on. If a scoring change stops it being a rally, this should fail loudly
+    # rather than quietly pass.
+    assert report.setup == "rally" and report.direction == "short"
+    assert not report.is_actionable
+    assert any("rally setup is disabled" in v for v in report.vetoes)
+
+
+def test_re_enabling_the_setup_makes_the_veto_go_away():
+    """The decision came from one backtest window, so it must be reversible."""
+    import dataclasses
+
+    from quantdesk.strategy.signals import score_symbol
+
+    bars = _downtrending_bars()
+    profile = dataclasses.replace(get_profile("aggressive"), disabled_setups=())
+    report = score_symbol("TEST", bars, profile)
+    assert report.setup == "rally"
+    assert not any("disabled" in v for v in report.vetoes)
+    # Scored 68 with no veto at all - which is what makes the veto necessary
+    # rather than a score penalty.
+    assert report.is_actionable
+
+
+def test_rally_is_off_by_default_and_breakdown_is_not():
+    """Cutting one losing short setup is not a verdict on shorting.
+
+    "breakdown" made money over the same window this decision came from, so
+    switching off the whole short side would be a different - and unsupported -
+    change.
+    """
+    for name in ("conservative", "moderate", "aggressive"):
+        disabled = get_profile(name).disabled_setups
+        assert "rally" in disabled
+        assert "breakdown" not in disabled
