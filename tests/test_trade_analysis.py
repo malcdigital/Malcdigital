@@ -5,7 +5,7 @@ from datetime import date
 import pytest
 
 from quantdesk.analysis.trades import (
-    GAP_STOP, STOP, TARGET, TIME_STOP, TRAILING,
+    GAP_STOP, GAP_TRAILED, STOP, TARGET, TIME_STOP, TRAILING,
     analyze_trades, classify_exit, to_text,
 )
 from quantdesk.portfolio.store import Trade
@@ -223,3 +223,159 @@ def test_text_report_renders():
     assert "RESULT DISTRIBUTION" in text
     assert "BY SETUP" in text and "BY DIRECTION" in text
     assert "WHAT THIS SAYS" in text
+
+
+# --- round trips: the distortion this module was rebuilt to remove -----------
+def entry(pid, shares=100, direction="long", setup="breakout"):
+    return Trade(symbol="X", action="short" if direction == "short" else "buy",
+                 shares=shares, price=100.0, trade_date=date(2024, 1, 1),
+                 position_id=pid, direction=direction, setup=setup)
+
+
+def leg(pid, reason, r, shares, pnl, day=2, trailed=False,
+        direction="long", setup="breakout"):
+    return Trade(symbol="X", action="cover" if direction == "short" else "sell",
+                 shares=shares, price=100.0, trade_date=date(2024, 1, day),
+                 reason=reason, realized_pnl=pnl, r_multiple=r,
+                 holding_days=day * 5, stop_trailed=trailed,
+                 position_id=pid, direction=direction, setup=setup)
+
+
+def test_a_staged_exit_is_one_trade_not_two():
+    """The bug that made a working design look broken.
+
+    Half off at +2R and the remainder stopped at -1R is a single position that
+    returned +0.5R. Counted per exit event it becomes a +2R win measured on half
+    a position and a -1R loss measured on the other half, which are then
+    averaged against each other as if they were separate trades.
+    """
+    trades = [
+        entry(1, shares=100),
+        leg(1, "target $120.00 reached", 2.0, 50, +1000.0, day=2),
+        leg(1, "stop loss hit", -1.0, 50, -500.0, day=4),
+    ]
+    analysis = analyze_trades(trades)
+
+    assert analysis.closed == 1, "one position, one trade"
+    assert analysis.multi_exit == 1
+    assert analysis.partial_profit == 1
+    # R weighted by the share of the position each leg closed: (2.0+-1.0)/2
+    trip_r = analysis.r_histogram
+    assert trip_r["+0.05R to +1R"] == 1
+    assert analysis.avg_win_r == pytest.approx(0.5)
+    assert analysis.avg_loss_r == 0.0, "there is no losing trade here"
+
+
+def test_the_outcome_is_recorded_against_the_final_exit():
+    trades = [
+        entry(1),
+        leg(1, "target $120.00 reached", 2.0, 50, +1000.0, day=2),
+        leg(1, "stop loss hit", -1.0, 50, -500.0, day=4),
+    ]
+    analysis = analyze_trades(trades)
+    assert analysis.buckets[STOP].count == 1
+    assert analysis.buckets[STOP].total_pnl == pytest.approx(500.0)
+
+
+def test_r_is_weighted_by_the_size_each_leg_closed():
+    """An 80/20 split must not average as if it were 50/50."""
+    trades = [
+        entry(1, shares=100),
+        leg(1, "target $120.00 reached", 3.0, 80, +2400.0, day=2),
+        leg(1, "stop loss hit", -1.0, 20, -200.0, day=3),
+    ]
+    analysis = analyze_trades(trades)
+    # (3.0*80 + -1.0*20) / 100 = 2.2
+    assert analysis.avg_win_r == pytest.approx(2.2)
+
+
+def test_a_position_still_open_is_not_counted_as_a_result():
+    """Booking the realised half while ignoring the open remainder is fiction."""
+    trades = [
+        entry(1, shares=100),
+        leg(1, "target $120.00 reached", 2.0, 50, +1000.0, day=2),
+        # the other 50 shares are still held
+    ]
+    analysis = analyze_trades(trades)
+    assert analysis.closed == 0
+    assert analysis.open_at_end == 1
+
+
+def test_separate_positions_stay_separate():
+    trades = [
+        entry(1), leg(1, "target $1 reached", 2.0, 100, +1000.0),
+        entry(2), leg(2, "stop loss hit", -1.0, 100, -500.0),
+    ]
+    analysis = analyze_trades(trades)
+    assert analysis.closed == 2
+    assert analysis.multi_exit == 0
+    assert analysis.win_rate == pytest.approx(50.0)
+
+
+def test_dollar_averages_are_now_position_level():
+    trades = [
+        entry(1), leg(1, "target $1 reached", 2.0, 100, +1000.0),
+        entry(2), leg(2, "stop loss hit", -1.0, 100, -400.0),
+    ]
+    analysis = analyze_trades(trades)
+    assert analysis.avg_win_dollars == pytest.approx(1000.0)
+    assert analysis.avg_loss_dollars == pytest.approx(400.0)
+
+
+# --- gap classification -------------------------------------------------------
+def test_a_gap_through_a_trailed_stop_is_not_a_disaster():
+    """It gives back profit; gapping through the original stop exceeds the loss."""
+    from quantdesk.analysis.trades import GAP_TRAILED
+
+    assert classify_exit("gapped through the stop", 0.8, stop_trailed=True) == GAP_TRAILED
+    assert classify_exit("gapped through the stop", -2.4, stop_trailed=False) == GAP_STOP
+
+
+def test_the_two_gap_kinds_are_reported_separately():
+    from quantdesk.analysis.trades import GAP_TRAILED
+
+    trades = []
+    for i in range(1, 11):
+        trades += [entry(i), leg(i, "gapped through the stop", -2.2, 100, -1100.0)]
+    for i in range(11, 16):
+        trades += [entry(i),
+                   leg(i, "gapped through the stop", 0.9, 100, +450.0, trailed=True)]
+
+    analysis = analyze_trades(trades)
+    assert analysis.buckets[GAP_STOP].count == 10
+    assert analysis.buckets[GAP_TRAILED].count == 5
+    assert analysis.buckets[GAP_STOP].avg_r < -1
+    assert analysis.buckets[GAP_TRAILED].avg_r > 0
+
+
+def test_staged_exits_are_explained_in_the_findings():
+    trades = []
+    for i in range(1, 41):
+        trades += [
+            entry(i),
+            leg(i, "target $1 reached", 2.0, 50, +1000.0, day=2),
+            leg(i, "stop loss hit", -1.0, 50, -500.0, day=4),
+        ]
+    text = " ".join(analyze_trades(trades).findings())
+    assert "closed in stages" in text
+    assert "part-positions against whole ones" in text
+
+
+def test_long_labels_do_not_break_the_columns():
+    """A misaligned table is easy to misread, and labels get renamed.
+
+    "gapped through trailed stop" is longer than the width the columns were
+    originally hard-coded to, which pushed every number on that row one place
+    right of its heading.
+    """
+    trades = [leg(1, "gapped through the stop - filled at the open", 0.8, 100,
+                  80.0, trailed=True), entry(1)]
+    lines = to_text(analyze_trades(trades)).splitlines()
+    header = next(x for x in lines if "HOW IT ENDED" in x)
+    row = next(x for x in lines if GAP_TRAILED in x and "%" in x)
+    count_col = slice(header.index("COUNT"), header.index("COUNT") + len("COUNT"))
+    assert row[count_col].strip() == "1"
+
+    dist = next(x for x in lines if "stop, as planned" in x)
+    widest = next(x for x in lines if "worse than planned" in x)
+    assert dist.index("%") == widest.index("%")

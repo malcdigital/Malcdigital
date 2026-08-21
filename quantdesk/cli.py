@@ -420,10 +420,47 @@ def cmd_backtest(args) -> int:
 
     if not args.no_files:
         settings.ensure_dirs()
-        path = settings.reports_dir / "backtest.html"
-        path.write_text(to_html(result), encoding="utf-8")
-        print(dim(f"\nHTML report: {path}"))
+        reports = settings.reports_dir
+
+        html_path = reports / "backtest.html"
+        html_path.write_text(to_html(result), encoding="utf-8")
+
+        # The terminal output scrolls away; without a text copy the only record
+        # is HTML, which is awkward to read back or paste anywhere.
+        text_path = reports / "backtest.txt"
+        text_path.write_text(to_text(result), encoding="utf-8")
+
+        # The backtest's own database is temporary, so without this the trade
+        # log dies with the run and re-examining it means replaying everything.
+        trades_path = reports / "backtest-trades.csv"
+        _write_trade_log(result.trades, trades_path)
+
+        print(dim(f"\nHTML report:  {html_path}"))
+        print(dim(f"Text report:  {text_path}"))
+        print(dim(f"Trade log:    {trades_path}"))
     return 0
+
+
+def _write_trade_log(trades, path) -> None:
+    import csv
+
+    fields = ["trade_date", "symbol", "action", "direction", "setup", "shares",
+              "price", "commission", "realized_pnl", "r_multiple",
+              "holding_days", "stop_trailed", "position_id", "reason"]
+    with open(path, "w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(fields)
+        for trade in sorted(trades, key=lambda t: (t.trade_date, t.id or 0)):
+            writer.writerow([
+                trade.trade_date.isoformat(), trade.symbol, trade.action,
+                trade.direction, trade.setup, trade.shares,
+                f"{trade.price:.4f}", f"{trade.commission:.2f}",
+                "" if trade.realized_pnl is None else f"{trade.realized_pnl:.2f}",
+                "" if trade.r_multiple is None else f"{trade.r_multiple:.4f}",
+                "" if trade.holding_days is None else trade.holding_days,
+                int(bool(trade.stop_trailed)), trade.position_id or "",
+                trade.reason,
+            ])
 
 
 def cmd_serve(args) -> int:
@@ -605,8 +642,20 @@ def cmd_trades(args) -> int:
     from quantdesk.analysis.trades import analyze_trades, to_text
     from quantdesk.portfolio.store import PortfolioStore
 
-    store = PortfolioStore(settings.db_path)
-    analysis = analyze_trades(store.trades(limit=100_000))
+    if args.file:
+        path = Path(args.file).expanduser()
+        if not path.exists():
+            # A mistyped path is the likeliest way to get here; a traceback
+            # says the same thing at ten times the length.
+            print(f"No trade log at {path}. `backtest` writes one to "
+                  f"{settings.reports_dir / 'backtest-trades.csv'}.")
+            return 2
+        trades = _read_trade_log(path)
+        print(dim(f"Reading {len(trades)} trades from {path}"))
+    else:
+        store = PortfolioStore(settings.db_path)
+        trades = store.trades(limit=100_000)
+    analysis = analyze_trades(trades)
     if not analysis.closed:
         print(dim("No closed trades yet - nothing to break down."))
         return 0
@@ -614,6 +663,37 @@ def cmd_trades(args) -> int:
     print(to_text(analysis))
     print()
     return 0
+
+
+def _read_trade_log(path):
+    """Read back a trade log written by `backtest`."""
+    import csv
+    from datetime import date as _date
+
+    from quantdesk.portfolio.store import Trade
+
+    def maybe_float(value):
+        return float(value) if value not in ("", None) else None
+
+    def maybe_int(value):
+        return int(value) if value not in ("", None) else None
+
+    out = []
+    with open(path, newline="", encoding="utf-8") as handle:
+        for row in csv.DictReader(handle):
+            out.append(Trade(
+                symbol=row["symbol"], action=row["action"],
+                shares=int(row["shares"]), price=float(row["price"]),
+                trade_date=_date.fromisoformat(row["trade_date"]),
+                commission=float(row["commission"] or 0.0),
+                reason=row["reason"], realized_pnl=maybe_float(row["realized_pnl"]),
+                position_id=maybe_int(row["position_id"]),
+                r_multiple=maybe_float(row["r_multiple"]),
+                holding_days=maybe_int(row["holding_days"]),
+                stop_trailed=bool(int(row["stop_trailed"] or 0)),
+                direction=row["direction"] or "long", setup=row["setup"] or "",
+            ))
+    return out
 
 
 def cmd_history(args) -> int:
@@ -814,6 +894,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("trades",
                        help="break down how closed trades ended, and why")
+    p.add_argument("--file",
+                   help="read a trade log written by `backtest` instead of the "
+                        "live portfolio")
     _add_common(p)
     p.set_defaults(func=cmd_trades)
 

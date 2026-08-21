@@ -293,3 +293,74 @@ def test_report_renders(result):
     assert html.startswith("<!DOCTYPE html>") and "</html>" in html
     assert "<svg" in html
     assert "Buy &amp; hold" in html
+
+
+def test_the_html_report_carries_the_trade_breakdown():
+    """The HTML is the file most people open; the text report is not.
+
+    Shipping the breakdown only in the text output meant the reader who clicks
+    backtest.html saw the headline return without the section that explains it.
+    """
+    from datetime import date
+
+    from quantdesk.backtest import BacktestMetrics, BacktestResult
+    from quantdesk.backtest_report import to_html
+    from quantdesk.portfolio.store import Trade
+
+    trades = [
+        Trade(symbol="X", action="buy", shares=100, price=100.0,
+              trade_date=date(2024, 1, 1), position_id=1, setup="breakout"),
+        Trade(symbol="X", action="sell", shares=100, price=120.0,
+              trade_date=date(2024, 2, 1), position_id=1, setup="breakout",
+              reason="target $120.00 reached", realized_pnl=2000.0,
+              r_multiple=2.0, holding_days=31),
+    ]
+    metrics = BacktestMetrics(total_return_pct=2.0, cagr_pct=2.0,
+                              max_drawdown_pct=-1.0, sharpe=0.5, sortino=0.6,
+                              volatility_pct=10.0, closed_trades=1)
+    html = to_html(BacktestResult(
+        config=BacktestConfig(start=date(2024, 1, 1), end=date(2024, 3, 1),
+                              symbols=["X"]),
+        trades=trades, sessions=40, metrics=metrics,
+        equity_curve=[(date(2024, 1, 1), 100000.0), (date(2024, 3, 1), 102000.0)],
+    ))
+    assert "How the trades ended" in html
+    assert "Result distribution" in html
+    assert "target reached" in html
+
+
+def test_the_html_report_omits_the_breakdown_with_no_closed_trades():
+    from datetime import date
+
+    from quantdesk.backtest import BacktestMetrics, BacktestResult
+    from quantdesk.backtest_report import to_html
+
+    metrics = BacktestMetrics(total_return_pct=0.0, cagr_pct=0.0,
+                              max_drawdown_pct=0.0, sharpe=0.0, sortino=0.0,
+                              volatility_pct=0.0)
+    html = to_html(BacktestResult(
+        config=BacktestConfig(start=date(2024, 1, 1), end=date(2024, 3, 1),
+                              symbols=["X"]),
+        sessions=40, metrics=metrics,
+        equity_curve=[(date(2024, 1, 1), 100000.0), (date(2024, 3, 1), 100000.0)],
+    ))
+    assert "How the trades ended" not in html
+
+
+def test_the_html_report_survives_a_missing_benchmark():
+    """A benchmark that failed to load must not take the report down with it."""
+    from datetime import date
+
+    from quantdesk.backtest import BacktestMetrics, BacktestResult
+    from quantdesk.backtest_report import to_html
+
+    metrics = BacktestMetrics(total_return_pct=5.0, cagr_pct=5.0,
+                              max_drawdown_pct=-2.0, sharpe=0.4, sortino=0.5,
+                              volatility_pct=9.0)
+    html = to_html(BacktestResult(
+        config=BacktestConfig(start=date(2024, 1, 1), end=date(2024, 3, 1),
+                              symbols=["X"]),
+        sessions=40, metrics=metrics, benchmark_metrics=None,
+        equity_curve=[(date(2024, 1, 1), 100000.0), (date(2024, 3, 1), 105000.0)],
+    ))
+    assert "n/a" in html and "+5.0%" in html

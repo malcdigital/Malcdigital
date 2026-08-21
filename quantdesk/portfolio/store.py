@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS trades (
     position_id INTEGER,
     r_multiple REAL,
     holding_days INTEGER,
+    stop_trailed INTEGER NOT NULL DEFAULT 0,
     direction TEXT NOT NULL DEFAULT 'long',
     setup TEXT NOT NULL DEFAULT ''
 );
@@ -283,6 +284,15 @@ class Trade:
     """
 
     holding_days: int | None = None
+    stop_trailed: bool = False
+    """Whether the stop had been moved from where it started.
+
+    Gapping through the original stop is a loss beyond what was planned.
+    Gapping through a stop already trailed into profit just gives some of that
+    profit back. They look identical in the exit reason and are not the same
+    event.
+    """
+
     direction: str = "long"
     setup: str = ""
     id: int | None = None
@@ -385,6 +395,7 @@ class PortfolioStore:
         "trades": {
             "r_multiple": "REAL",
             "holding_days": "INTEGER",
+            "stop_trailed": "INTEGER NOT NULL DEFAULT 0",
             "direction": "TEXT NOT NULL DEFAULT 'long'",
             "setup": "TEXT NOT NULL DEFAULT ''",
         },
@@ -539,12 +550,14 @@ class PortfolioStore:
             cur = conn.execute(
                 "INSERT INTO trades(symbol, action, shares, price, trade_date, "
                 "commission, reason, realized_pnl, position_id, r_multiple, "
-                "holding_days, direction, setup) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "holding_days, stop_trailed, direction, setup) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     trade.symbol.upper(), trade.action, trade.shares, trade.price,
                     _iso(trade.trade_date), trade.commission, trade.reason,
                     trade.realized_pnl, trade.position_id, trade.r_multiple,
-                    trade.holding_days, trade.direction, trade.setup,
+                    trade.holding_days, int(trade.stop_trailed),
+                    trade.direction, trade.setup,
                 ),
             )
             return int(cur.lastrowid)
@@ -568,6 +581,7 @@ class PortfolioStore:
                 commission=r["commission"], reason=r["reason"] or "",
                 realized_pnl=r["realized_pnl"], position_id=r["position_id"],
                 r_multiple=r["r_multiple"], holding_days=r["holding_days"],
+                stop_trailed=bool(r["stop_trailed"]),
                 direction=r["direction"] or "long", setup=r["setup"] or "",
             )
             for r in rows
