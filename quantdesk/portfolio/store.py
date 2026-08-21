@@ -53,7 +53,11 @@ CREATE TABLE IF NOT EXISTS trades (
     commission REAL NOT NULL DEFAULT 0,
     reason TEXT,
     realized_pnl REAL,
-    position_id INTEGER
+    position_id INTEGER,
+    r_multiple REAL,
+    holding_days INTEGER,
+    direction TEXT NOT NULL DEFAULT 'long',
+    setup TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS equity_history (
@@ -269,11 +273,27 @@ class Trade:
     reason: str = ""
     realized_pnl: float | None = None
     position_id: int | None = None
+    r_multiple: float | None = None
+    """Result in multiples of the risk originally taken.
+
+    The single most comparable per-trade number: a $400 gain means nothing
+    without knowing whether $200 or $2,000 was risked to get it. Recorded at
+    close rather than derived later, because the position it refers to may be
+    gone by the time anyone asks.
+    """
+
+    holding_days: int | None = None
+    direction: str = "long"
+    setup: str = ""
     id: int | None = None
 
     @property
     def value(self) -> float:
         return self.shares * self.price
+
+    @property
+    def is_exit(self) -> bool:
+        return self.action in ("sell", "cover")
 
 
 @dataclass
@@ -355,6 +375,42 @@ class PortfolioStore:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
             conn.executescript(SCHEMA)
+        self._migrate()
+
+    #: Columns added after the first release. CREATE TABLE IF NOT EXISTS will
+    #: not add them to a database that already exists, so an account created
+    #: before they were introduced needs them filled in rather than being
+    #: silently unreadable.
+    _ADDED_COLUMNS = {
+        "trades": {
+            "r_multiple": "REAL",
+            "holding_days": "INTEGER",
+            "direction": "TEXT NOT NULL DEFAULT 'long'",
+            "setup": "TEXT NOT NULL DEFAULT ''",
+        },
+        "positions": {
+            "direction": "TEXT NOT NULL DEFAULT 'long'",
+            "lowest_close": "REAL NOT NULL DEFAULT 0",
+            "proxy_for": "TEXT NOT NULL DEFAULT ''",
+        },
+        "orders": {
+            "direction": "TEXT NOT NULL DEFAULT 'long'",
+            "proxy_for": "TEXT NOT NULL DEFAULT ''",
+        },
+    }
+
+    def _migrate(self) -> None:
+        with self._connect() as conn:
+            for table, columns in self._ADDED_COLUMNS.items():
+                existing = {
+                    row["name"]
+                    for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+                }
+                for name, definition in columns.items():
+                    if name not in existing:
+                        conn.execute(
+                            f"ALTER TABLE {table} ADD COLUMN {name} {definition}"
+                        )
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -482,11 +538,13 @@ class PortfolioStore:
         with self._connect() as conn:
             cur = conn.execute(
                 "INSERT INTO trades(symbol, action, shares, price, trade_date, "
-                "commission, reason, realized_pnl, position_id) VALUES(?,?,?,?,?,?,?,?,?)",
+                "commission, reason, realized_pnl, position_id, r_multiple, "
+                "holding_days, direction, setup) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     trade.symbol.upper(), trade.action, trade.shares, trade.price,
                     _iso(trade.trade_date), trade.commission, trade.reason,
-                    trade.realized_pnl, trade.position_id,
+                    trade.realized_pnl, trade.position_id, trade.r_multiple,
+                    trade.holding_days, trade.direction, trade.setup,
                 ),
             )
             return int(cur.lastrowid)
@@ -509,6 +567,8 @@ class PortfolioStore:
                 price=r["price"], trade_date=_to_date(r["trade_date"]),
                 commission=r["commission"], reason=r["reason"] or "",
                 realized_pnl=r["realized_pnl"], position_id=r["position_id"],
+                r_multiple=r["r_multiple"], holding_days=r["holding_days"],
+                direction=r["direction"] or "long", setup=r["setup"] or "",
             )
             for r in rows
         ]

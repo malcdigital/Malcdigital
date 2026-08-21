@@ -289,6 +289,9 @@ class PaperBroker:
             symbol=position.symbol, action=action, shares=shares, price=fill,
             trade_date=as_of, commission=commission, reason=reason,
             realized_pnl=round(pnl, 2), position_id=position.id,
+            r_multiple=round(position.r_multiple(fill), 4),
+            holding_days=position.days_held(as_of),
+            direction=position.direction, setup=position.setup,
         ))
 
         position.shares -= shares
@@ -415,7 +418,7 @@ class PaperBroker:
                 shares=order.shares, price=fill,
                 trade_date=as_of, commission=commission,
                 reason=f"{order.setup} {order.direction} entry ({order.order_type})",
-                position_id=pid,
+                position_id=pid, direction=order.direction, setup=order.setup,
             ))
             self.store.set_order_status(order.id, "filled")
             open_symbols.add(order.symbol)
