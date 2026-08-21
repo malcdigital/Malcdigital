@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import html
 
+from quantdesk.analysis.trades import analyze_trades
+from quantdesk.analysis.trades import to_text as trades_to_text
 from quantdesk.backtest import BacktestResult, verdict
 from quantdesk.portfolio.report import DISCLAIMER
 from quantdesk.web.charts import equity_comparison
@@ -70,6 +72,10 @@ def to_text(result: BacktestResult, width: int = 78) -> str:
           f"  Avg win       ${metrics.avg_win:,.2f}    Avg loss ${metrics.avg_loss:,.2f}",
           f"  Best          ${metrics.best_trade:+,.2f}    Worst ${metrics.worst_trade:+,.2f}",
           f"  Exposure      {metrics.exposure_pct:.0f}% of sessions held a position"]
+
+    breakdown = analyze_trades(result.trades)
+    if breakdown.closed:
+        L += ["", trades_to_text(breakdown, width)]
 
     L += ["", "VERDICT", thin]
     for line in verdict(result):

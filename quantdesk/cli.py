@@ -599,6 +599,23 @@ def cmd_status(args) -> int:
     return 0
 
 
+def cmd_trades(args) -> int:
+    """Break down how closed trades ended."""
+    settings = load_settings(args)
+    from quantdesk.analysis.trades import analyze_trades, to_text
+    from quantdesk.portfolio.store import PortfolioStore
+
+    store = PortfolioStore(settings.db_path)
+    analysis = analyze_trades(store.trades(limit=100_000))
+    if not analysis.closed:
+        print(dim("No closed trades yet - nothing to break down."))
+        return 0
+    print()
+    print(to_text(analysis))
+    print()
+    return 0
+
+
 def cmd_history(args) -> int:
     settings = load_settings(args)
     from quantdesk.portfolio.store import PortfolioStore
@@ -794,6 +811,11 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("status", help="show the portfolio right now")
     _add_common(p)
     p.set_defaults(func=cmd_status)
+
+    p = sub.add_parser("trades",
+                       help="break down how closed trades ended, and why")
+    _add_common(p)
+    p.set_defaults(func=cmd_trades)
 
     p = sub.add_parser("history", help="list recorded trades")
     p.add_argument("--limit", type=int, default=40)
