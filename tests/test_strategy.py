@@ -203,50 +203,37 @@ def _downtrending_bars(days=400, seed=0):
     }, index=idx)
 
 
-def test_a_rally_candidate_is_vetoed_rather_than_scored_down():
+def test_nothing_is_disabled_by_default():
+    """The one experiment this ran - cutting "rally" - came out worse.
+
+    Every measure fell: expectancy $75.13 to $71.50, Sharpe 0.74 to 0.69. The
+    mechanism stays because it is how such an experiment gets run; the default
+    is empty because the result said so.
+    """
+    for name in ("conservative", "moderate", "aggressive"):
+        assert get_profile(name).disabled_setups == ()
+
+
+def test_a_disabled_setup_is_vetoed_rather_than_scored_down():
     """It has to be a hard veto, not a penalty.
 
     A penalty lets a strong-enough signal through, which puts the setup back in
     the book precisely on the days it looks most attractive - and those are not
-    the days it loses least.
+    the days it loses least. This fixture scores 68 undisabled, so a penalty
+    would not have stopped it.
     """
-    from quantdesk.strategy.signals import score_symbol
-
-    bars = _downtrending_bars()
-    report = score_symbol("TEST", bars, get_profile("aggressive"))
-    # A skipped test is not a test: this fixture is chosen so the classifier
-    # really does produce a rally, and the assertion below has something to bite
-    # on. If a scoring change stops it being a rally, this should fail loudly
-    # rather than quietly pass.
-    assert report.setup == "rally" and report.direction == "short"
-    assert not report.is_actionable
-    assert any("rally setup is disabled" in v for v in report.vetoes)
-
-
-def test_re_enabling_the_setup_makes_the_veto_go_away():
-    """The decision came from one backtest window, so it must be reversible."""
     import dataclasses
 
     from quantdesk.strategy.signals import score_symbol
 
     bars = _downtrending_bars()
-    profile = dataclasses.replace(get_profile("aggressive"), disabled_setups=())
-    report = score_symbol("TEST", bars, profile)
-    assert report.setup == "rally"
-    assert not any("disabled" in v for v in report.vetoes)
-    # Scored 68 with no veto at all - which is what makes the veto necessary
-    # rather than a score penalty.
-    assert report.is_actionable
+    base = get_profile("aggressive")
+    allowed = score_symbol("TEST", bars, base)
+    assert allowed.setup == "rally" and allowed.direction == "short"
+    assert allowed.is_actionable and allowed.score > 60
 
-
-def test_rally_is_off_by_default_and_breakdown_is_not():
-    """Cutting one losing short setup is not a verdict on shorting.
-
-    "breakdown" made money over the same window this decision came from, so
-    switching off the whole short side would be a different - and unsupported -
-    change.
-    """
-    for name in ("conservative", "moderate", "aggressive"):
-        disabled = get_profile(name).disabled_setups
-        assert "rally" in disabled
-        assert "breakdown" not in disabled
+    blocked = score_symbol("TEST", bars,
+                           dataclasses.replace(base, disabled_setups=("rally",)))
+    assert not blocked.is_actionable
+    assert any("rally setup is disabled" in v for v in blocked.vetoes)
+    assert blocked.score == allowed.score  # vetoed, not marked down

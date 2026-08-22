@@ -392,6 +392,10 @@ def cmd_backtest(args) -> int:
     start = date.fromisoformat(args.start) if args.start else None
     end = date.fromisoformat(args.end) if args.end else None
 
+    overrides: dict = {}
+    if args.no_shorts:
+        overrides["allow_short"] = False
+
     config = BacktestConfig(
         symbols=symbols,
         start=start,
@@ -400,6 +404,7 @@ def cmd_backtest(args) -> int:
         risk_profile=settings.profile.name,
         max_new_ideas=args.ideas,
         scan_every=args.scan_every,
+        profile_overrides=overrides,
     )
 
     print(dim(f"Backtesting {len(symbols)} symbols on the "
@@ -914,6 +919,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="sessions between idea scans; positions are still "
                         "managed daily. Raise it to trade fidelity for speed.")
     p.add_argument("--no-files", action="store_true")
+    p.add_argument("--no-shorts", action="store_true",
+                   help="run long-only, whatever the profile allows. Changes "
+                        "the rules for this run only and is never written to "
+                        "your config.")
     p.add_argument("--split", action="store_true",
                    help="hold out the last third of the window. Develop against "
                         "the fit period; the holdout stays sealed until you ask "
