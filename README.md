@@ -267,6 +267,19 @@ quantdesk trades --file ~/.quantdesk/reports/backtest-trades.csv
   gapped through stop               1    1.1%   -1.16         2          -273
 ```
 
+**Targets are re-based on the fill.** A trade is written as "buy at X, stop at
+Y, take profit at X + 2(X−Y)". The fill is often not X — a limit gapped through
+fills at the open, below where the order sat — and leaving the targets where the
+plan put them lands the position with its first target nearly touched. On a real
+nine-year run, positions whose final exit was a target averaged **+0.00R and $1
+of profit between them**, and 166 of 563 positions banked a first target, so this
+is not a corner case.
+
+Each target's R multiple is recovered from its distance to the stop (which needs
+no record of the planned entry) and re-applied to the fill. **The stop is left
+alone** — it sits at a level the analysis identified, and that level means the
+same thing wherever the fill landed.
+
 **R is measured against the risk the position was sized on**, not the distance
 from the fill to the stop. Those look identical almost always. Then a limit
 order gaps through and fills at the open, below where it sat — sometimes a cent
