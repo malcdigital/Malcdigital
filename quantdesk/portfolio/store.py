@@ -40,7 +40,8 @@ CREATE TABLE IF NOT EXISTS positions (
     notes TEXT,
     direction TEXT NOT NULL DEFAULT 'long',
     lowest_close REAL NOT NULL DEFAULT 0,
-    proxy_for TEXT NOT NULL DEFAULT ''
+    proxy_for TEXT NOT NULL DEFAULT '',
+    entry_shares INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS trades (
@@ -140,6 +141,15 @@ class Position:
     lowest_close: float = 0.0
     proxy_for: str = ""
 
+    entry_shares: int = 0
+    """Size at entry, which `shares` stops being once the position is scaled out.
+
+    risk_dollars is the risk budget for the whole position, so turning it back
+    into a per-share figure needs the count it was derived from. Reading the
+    current `shares` instead would halve the reported R on the second leg of a
+    staged exit.
+    """
+
     @property
     def is_short(self) -> bool:
         return self.direction == "short"
@@ -168,17 +178,48 @@ class Position:
         change = price / self.entry_price - 1.0
         return (-change if self.is_short else change) * 100.0
 
-    def r_multiple(self, price: float) -> float:
-        """Open profit expressed in multiples of the original risk."""
-        if self.is_short:
-            risk_per_share = self.initial_stop - self.entry_price
-            if risk_per_share <= 0:
-                return 0.0
-            return (self.entry_price - price) / risk_per_share
-        risk_per_share = self.entry_price - self.initial_stop
-        if risk_per_share <= 0:
+    def planned_risk_per_share(self) -> float:
+        """Risk per share this position was sized on, or 0 if unusable.
+
+        Prefers the planned budget, because that is what the share count was
+        derived from. Falls back to the distance from the fill to the stop for
+        positions opened before entry_shares was recorded.
+        """
+        if self.risk_dollars > 0 and self.entry_shares > 0:
+            return self.risk_dollars / self.entry_shares
+        per_share = (self.initial_stop - self.entry_price) if self.is_short \
+            else (self.entry_price - self.initial_stop)
+        # A "stop" a hair from the fill is not a stop, it is an artefact of
+        # where the fill landed. Below a tenth of a percent of price, treat the
+        # risk as unknown rather than dividing by it.
+        if per_share <= 0 or per_share < abs(self.entry_price) * 0.001:
             return 0.0
-        return (price - self.entry_price) / risk_per_share
+        return per_share
+
+    def r_multiple(self, price: float) -> float | None:
+        """Profit or loss in multiples of the risk this position was sized on.
+
+        Measured against the planned risk, not the distance from the fill to
+        the stop. Those are usually the same and occasionally wildly are not: a
+        limit entry gapped through fills at the open, below where the order
+        sat, and can land a cent above the stop. Dividing by that cent produced
+        a -98R on a trade that lost $1,642, which then poisoned every average it
+        appeared in - including a setup reporting a negative mean R alongside
+        +$41,000 of profit.
+
+        Per share rather than per position, so a staged exit's legs can be
+        weighted by the shares each one closed.
+
+        None when no usable risk figure exists. Rare, and better than inventing
+        one: the analysis counts those separately instead of folding a
+        fabricated number into the distribution.
+        """
+        risk = self.planned_risk_per_share()
+        if risk <= 0:
+            return None
+        move = (self.entry_price - price) if self.is_short \
+            else (price - self.entry_price)
+        return move / risk
 
     def days_held(self, as_of: date | None = None) -> int:
         return ((as_of or date.today()) - self.entry_date).days
@@ -403,6 +444,10 @@ class PortfolioStore:
             "direction": "TEXT NOT NULL DEFAULT 'long'",
             "lowest_close": "REAL NOT NULL DEFAULT 0",
             "proxy_for": "TEXT NOT NULL DEFAULT ''",
+            # Defaults to 0 for rows opened before this existed, which sends
+            # planned_risk_per_share down its fallback path rather than
+            # inventing an entry size those positions never recorded.
+            "entry_shares": "INTEGER NOT NULL DEFAULT 0",
         },
         "orders": {
             "direction": "TEXT NOT NULL DEFAULT 'long'",
@@ -502,6 +547,7 @@ class PortfolioStore:
             direction=row["direction"] or "long",
             lowest_close=row["lowest_close"],
             proxy_for=row["proxy_for"] or "",
+            entry_shares=row["entry_shares"] or 0,
         )
 
     def add_position(self, position: Position) -> int:
@@ -510,8 +556,8 @@ class PortfolioStore:
                 "INSERT INTO positions(symbol, shares, entry_price, entry_date, "
                 "stop_price, initial_stop, targets, setup, risk_dollars, "
                 "highest_close, time_stop_days, status, notes, direction, "
-                "lowest_close, proxy_for) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "lowest_close, proxy_for, entry_shares) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     position.symbol.upper(), position.shares, position.entry_price,
                     _iso(position.entry_date), position.stop_price, position.initial_stop,
@@ -519,6 +565,9 @@ class PortfolioStore:
                     position.risk_dollars, position.highest_close,
                     position.time_stop_days, position.status, position.notes,
                     position.direction, position.lowest_close, position.proxy_for,
+                    # Whatever it opened at - never the current count, which
+                    # shrinks as the position is scaled out.
+                    position.entry_shares or position.shares,
                 ),
             )
             return int(cur.lastrowid)
