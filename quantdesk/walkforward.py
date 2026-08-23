@@ -82,6 +82,14 @@ class Degradation:
     holdout: float
     higher_is_better: bool = True
     suffix: str = "%"
+    is_gap: bool = False
+    """Whether the two values are already differences against the benchmark.
+
+    A gap can sit either side of zero, so the share of it that survived is not
+    a meaningful quantity: an edge of +0.04 followed by -0.43 would report as
+    "kept -1075%", which reads as arithmetic rather than as the sign change it
+    actually is.
+    """
 
     @property
     def change(self) -> float:
@@ -98,7 +106,7 @@ class Degradation:
         Undefined when the fit value is at or below zero: "kept 40% of a
         negative return" is not a sentence worth printing.
         """
-        if not self.higher_is_better or self.fit <= 0:
+        if self.is_gap or not self.higher_is_better or self.fit <= 0:
             return None
         return self.holdout / self.fit
 
@@ -143,6 +151,42 @@ class SplitResult:
                         suffix=""),
             Degradation("Expectancy", a.expectancy, b.expectancy, suffix=""),
             Degradation("Win rate", a.win_rate, b.win_rate),
+        ]
+
+    def benchmark_gaps(self) -> list[Degradation]:
+        """The same comparison, measured against buy-and-hold in each window.
+
+        Comparing a strategy to itself across two windows answers "was this
+        fitted to its development data" and nothing else. It cannot tell you
+        that both windows got easier, which is what a table of across-the-board
+        improvement usually means. Holding each window against its own
+        benchmark removes the regime from both sides: a strategy that beat the
+        index in-sample and lost to it out-of-sample has lost the only thing it
+        had, however healthy its own numbers look.
+
+        Restricted to measures buy-and-hold can meaningfully post. Profit
+        factor, expectancy and win rate over a single held position are not
+        comparable quantities.
+        """
+        if not (self.fit and self.holdout):
+            return []
+        a, b = self.fit.metrics, self.holdout.metrics
+        fb = getattr(self.fit, "benchmark_metrics", None)
+        hb = getattr(self.holdout, "benchmark_metrics", None)
+        if not (a and b and fb and hb):
+            return []
+        pairs = [
+            ("CAGR", "cagr_pct", "%"),
+            ("Sharpe", "sharpe", ""),
+            ("Sortino", "sortino", ""),
+            ("Max drawdown", "max_drawdown_pct", "%"),
+        ]
+        return [
+            Degradation(measure,
+                        getattr(a, attr) - getattr(fb, attr),
+                        getattr(b, attr) - getattr(hb, attr),
+                        suffix=suffix, is_gap=True)
+            for measure, attr, suffix in pairs
         ]
 
     def verdict(self) -> list[str]:
@@ -203,6 +247,50 @@ class SplitResult:
                     "is normal and expected; this is within the range where the "
                     "edge might be real."
                 )
+
+        # Across-the-board improvement is not the good news it reads as.
+        if degradations and all(not d.worse for d in degradations):
+            out.append(
+                "Every measure improved out of sample. A set of rules does not "
+                "get better on data it has never seen, so the likelier reading "
+                "is that the holdout was an easier stretch of market than the "
+                "fit window - check what the two periods contained before "
+                "taking this as a pass."
+            )
+
+        # And the check that survives a change of regime: how each window did
+        # against its own benchmark, rather than how the strategy did against
+        # itself.
+        gap = next((d for d in self.benchmark_gaps() if d.measure == "Sharpe"),
+                   None)
+        if gap and gap.fit > 0 and gap.holdout < 0:
+            out.append(
+                f"Against buy-and-hold, Sharpe went from {gap.fit:+.2f} in the "
+                f"fit window to {gap.holdout:+.2f} out of sample. Beating the "
+                "index on risk-adjusted terms is the case for running something "
+                "that underperforms it outright, and that case did not survive "
+                "the split."
+            )
+        elif gap and gap.fit <= 0 and gap.holdout <= 0:
+            out.append(
+                f"It trailed buy-and-hold on Sharpe in both windows "
+                f"({gap.fit:+.2f} then {gap.holdout:+.2f}). Overfitting is not "
+                "the problem here - it has not beaten the index on "
+                "risk-adjusted terms in either period."
+            )
+        elif gap and gap.worse:
+            out.append(
+                f"Its Sharpe advantage over buy-and-hold narrowed from "
+                f"{gap.fit:+.2f} to {gap.holdout:+.2f}. Still ahead of the "
+                "index on risk-adjusted terms, by less."
+            )
+        elif gap:
+            out.append(
+                f"It held its Sharpe advantage over buy-and-hold "
+                f"({gap.fit:+.2f} to {gap.holdout:+.2f}). That is the "
+                "comparison that survives a change of regime, and it is the "
+                "one worth weighting."
+            )
 
         # A holdout that matches the fit window too closely is more often a leak
         # than a triumph, and it is worth saying so before anyone celebrates.
@@ -377,6 +465,24 @@ def to_text(split: SplitResult, width: int = 78) -> str:
             f"{d.holdout:>11,.2f}{d.suffix:<1}"
             f"{d.change:>+11,.2f}{d.suffix:<1}{mark}"
         )
+
+    gaps = split.benchmark_gaps()
+    if gaps:
+        L += ["",
+              "  VERSUS BUY-AND-HOLD (strategy minus its own benchmark, "
+              "per window)",
+              f"  {'MEASURE':<18}{'FIT':>12}{'HOLDOUT':>12}{'CHANGE':>12}"]
+        for d in gaps:
+            mark = "  worse" if d.worse else ""
+            L.append(
+                f"  {d.measure:<18}{d.fit:>+11,.2f}{d.suffix:<1}"
+                f"{d.holdout:>+11,.2f}{d.suffix:<1}"
+                f"{d.change:>+11,.2f}{d.suffix:<1}{mark}"
+            )
+        L.append("  A positive number beat the index in that window. This is "
+                 "the table")
+        L.append("  to read when both windows improved: it takes the regime "
+                 "out of both sides.")
 
     bench = split.holdout.benchmark_metrics
     if bench:
