@@ -105,14 +105,39 @@ class FakeRun:
 
 
 def make_split(fit_cagr, holdout_cagr, reveals=1, revealed=True,
-               benchmark=None, closed=100,
+               benchmark=None, closed=100, fit_benchmark=None,
                holdout_start=date(2023, 1, 1), holdout_end=date(2026, 1, 1)):
     return SplitResult(
         fit_start=date(2017, 1, 1), fit_end=holdout_start,
         holdout_start=holdout_start, holdout_end=holdout_end,
-        fit=FakeRun(FakeMetrics(fit_cagr)),
+        fit=FakeRun(FakeMetrics(fit_cagr), fit_benchmark),
         holdout=FakeRun(FakeMetrics(holdout_cagr, closed=closed), benchmark),
         reveals=reveals, revealed=revealed,
+    )
+
+
+def beat_and_then_lost():
+    """The real shape of the 2023-2026 holdout.
+
+    Every strategy measure improved, and every one of them improved less than
+    the index did. Reading the strategy against itself calls that a pass.
+    """
+    return SplitResult(
+        fit_start=date(2017, 9, 1), fit_end=date(2023, 9, 4),
+        holdout_start=date(2023, 9, 5), holdout_end=date(2026, 8, 20),
+        fit=FakeRun(
+            FakeMetrics(6.81, sharpe=0.72, sortino=0.92, dd=-12.99, pf=1.33,
+                        expectancy=79.22, win_rate=45.60, total=48.49,
+                        closed=574),
+            FakeMetrics(12.42, sharpe=0.68, sortino=0.82, dd=-33.72,
+                        total=101.80)),
+        holdout=FakeRun(
+            FakeMetrics(9.32, sharpe=0.90, sortino=1.28, dd=-9.66, pf=1.44,
+                        expectancy=97.68, win_rate=46.40, total=30.16,
+                        closed=278),
+            FakeMetrics(21.12, sharpe=1.33, sortino=1.76, dd=-18.76,
+                        total=76.20)),
+        reveals=1, revealed=True,
     )
 
 
@@ -318,3 +343,75 @@ def test_a_split_without_explicit_dates_is_refused():
     with pytest.raises(ValueError, match="explicit start and end"):
         run_split(get_provider("synthetic"),
                   BacktestConfig(symbols=["SPY"], start=None, end=None))
+
+
+# --- against the benchmark, not against itself --------------------------------
+def test_a_gap_is_the_strategy_minus_its_own_benchmark():
+    gaps = {d.measure: d for d in beat_and_then_lost().benchmark_gaps()}
+    assert gaps["Sharpe"].fit == pytest.approx(0.72 - 0.68)
+    assert gaps["Sharpe"].holdout == pytest.approx(0.90 - 1.33)
+    assert gaps["CAGR"].holdout == pytest.approx(9.32 - 21.12)
+
+
+def test_a_shallower_drawdown_than_the_index_is_a_positive_gap():
+    """Both are negative, so the gap is how much less of it you took."""
+    gaps = {d.measure: d for d in beat_and_then_lost().benchmark_gaps()}
+    assert gaps["Max drawdown"].fit == pytest.approx(20.73)
+    assert gaps["Max drawdown"].worse  # +20.73 in the fit window, +9.10 out
+
+
+def test_gaps_need_a_benchmark_in_both_windows():
+    """One benchmark cannot make a comparison across two regimes."""
+    assert make_split(10.0, 8.0, benchmark=FakeMetrics(20.0)).benchmark_gaps() == []
+    assert make_split(10.0, 8.0).benchmark_gaps() == []
+
+
+def test_a_gap_does_not_report_a_retained_share():
+    """+0.04 to -0.43 is a sign change, not "kept -1075%"."""
+    gap = next(d for d in beat_and_then_lost().benchmark_gaps()
+               if d.measure == "Sharpe")
+    assert gap.retained is None
+
+
+def test_profit_factor_is_not_compared_against_buy_and_hold():
+    """One held position has no win rate worth the name."""
+    measures = {d.measure for d in beat_and_then_lost().benchmark_gaps()}
+    assert "Profit factor" not in measures and "Win rate" not in measures
+
+
+# --- what the gap makes the verdict say ---------------------------------------
+def test_improving_everywhere_is_read_as_an_easier_market():
+    """A design does not get better on data it has never seen."""
+    text = " ".join(make_split(10.0, 12.0).verdict())
+    assert "Every measure improved out of sample" in text
+    assert "easier stretch of market" in text
+
+
+def test_an_edge_over_the_index_that_does_not_survive_is_named():
+    text = " ".join(beat_and_then_lost().verdict())
+    assert "Sharpe went from +0.04 in the fit window to -0.43" in text
+    assert "did not survive the split" in text
+    # And it says so despite the strategy's own numbers all improving.
+    assert "kept 137% of its fitted CAGR" in text
+
+
+def test_trailing_the_index_in_both_windows_is_not_blamed_on_overfitting():
+    split = make_split(6.0, 5.0,
+                       fit_benchmark=FakeMetrics(12.0, sharpe=1.4),
+                       benchmark=FakeMetrics(14.0, sharpe=1.6))
+    text = " ".join(split.verdict())
+    assert "Overfitting is not the problem here" in text
+
+
+def test_keeping_the_edge_over_the_index_is_said_plainly():
+    split = make_split(10.0, 9.0,
+                       fit_benchmark=FakeMetrics(6.0, sharpe=0.4),
+                       benchmark=FakeMetrics(5.0, sharpe=0.3))
+    text = " ".join(split.verdict())
+    assert "held its Sharpe advantage" in text
+
+
+def test_the_text_report_shows_the_benchmark_gap_table():
+    text = to_text(beat_and_then_lost())
+    assert "VERSUS BUY-AND-HOLD" in text
+    assert "-0.43" in text and "+0.04" in text
