@@ -39,6 +39,52 @@ ORDER_LIFETIME_DAYS = 5
 """How long a working order stays live before the setup is considered stale."""
 
 
+def rebase_targets(
+    targets: list[tuple[float, float]], stop: float, risk_per_share: float,
+    fill: float, is_short: bool = False,
+) -> list[tuple[float, float]]:
+    """Move targets so they sit the planned distance from the price actually paid.
+
+    Targets are laid out as `planned_entry +/- r * risk_per_share` when the trade
+    is written. The fill is frequently not the planned entry - a limit gapped
+    through fills at the open, below where the order sat - and the targets were
+    left where the plan put them. A cheap fill therefore lands the position with
+    its first target almost touched, and it exits for a rounding error: in a
+    nine-year run, positions whose final exit was a target averaged +0.00R and
+    $1 of profit between them.
+
+    This is the same plan-versus-fill divergence that broke the R denominator,
+    in a place where it moves money rather than a report column: 166 of 563
+    positions banked a first target.
+
+    The R multiple of each target is recovered from its distance to the stop,
+    which needs no record of the planned entry:
+
+        long:   target - stop == (r + 1) * risk_per_share
+        short:  stop - target == (r + 1) * risk_per_share
+
+    The stop is deliberately left alone. It was placed at a level the analysis
+    identified - below support, or an ATR beyond entry - and that level means
+    the same thing wherever the fill landed. Moving it would discard the reason
+    it is there.
+    """
+    if risk_per_share <= 0 or not targets:
+        return targets
+
+    sign = -1.0 if is_short else 1.0
+    out: list[tuple[float, float]] = []
+    for price, take in targets:
+        span = (stop - price) if is_short else (price - stop)
+        r = span / risk_per_share - 1.0
+        if r <= 0:
+            # Not a profit target as laid out - leave it untouched rather than
+            # reflecting it to the wrong side of the fill.
+            out.append((price, take))
+            continue
+        out.append((round(fill + sign * r * risk_per_share, 2), take))
+    return out
+
+
 def _fmt_r(value: float | None) -> str:
     """Render an R multiple for humans, saying so when there isn't one."""
     return "R n/a" if value is None else f"{value:+.2f}R"
@@ -412,6 +458,14 @@ class PaperBroker:
                         "reserve floor",
                     ))
                     continue
+                # risk_dollars is the budget the original size was derived
+                # from. Carrying it over intact would spread the same budget
+                # across fewer shares, inflating planned risk per share - which
+                # reads back as a smaller R and pushes the rebased targets out
+                # past where the plan put them.
+                if order.shares > 0:
+                    order.risk_dollars = round(
+                        order.risk_dollars * affordable / order.shares, 2)
                 order.shares = affordable
                 commission = self._commission(order.shares)
                 cost = order.shares * fill + commission
@@ -430,6 +484,12 @@ class PaperBroker:
                 direction=order.direction, lowest_close=fill,
                 proxy_for=order.proxy_for, entry_shares=order.shares,
             )
+            if order.shares > 0 and order.risk_dollars > 0:
+                position.targets = rebase_targets(
+                    position.targets, order.stop_loss,
+                    order.risk_dollars / order.shares, fill,
+                    is_short=order.direction == "short",
+                )
             pid = self.store.add_position(position)
             self.store.record_trade(Trade(
                 symbol=order.symbol,
