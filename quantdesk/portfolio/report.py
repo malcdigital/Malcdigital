@@ -16,6 +16,16 @@ DISCLAIMER = (
 )
 
 
+def _r_cell(value: float | None) -> str:
+    """R for a fixed-width column, blank when the position has no usable risk."""
+    return "  -" if value is None else f"{value:+.2f}"
+
+
+def _r_text(value: float | None) -> str:
+    """R for an HTML cell. A dash, not 0.00R, which would read as break-even."""
+    return "-" if value is None else f"{value:+.2f}R"
+
+
 @dataclass
 class DailyReport:
     as_of: date
@@ -107,7 +117,7 @@ class DailyReport:
                 L.append(
                     f"  {r['symbol']:<7}{r['shares']:>5}{r['entry']:>10,.2f}"
                     f"{r['price']:>10,.2f}{r['pnl']:>+12,.2f}{r['pnl_pct']:>+8.1f}"
-                    f"{r['r']:>+7.2f}{r['stop']:>10,.2f}{r['days']:>6}"
+                    f"{_r_cell(r['r']):>7}{r['stop']:>10,.2f}{r['days']:>6}"
                 )
             open_risk = sum((r['price'] - r['stop']) * r['shares'] for r in rows)
             L.append("")
@@ -166,7 +176,7 @@ class DailyReport:
             f"<td>{money(r['entry'])}</td><td>{money(r['price'])}</td>"
             f"<td class='{cls(r['pnl'])}'>{r['pnl']:+,.2f}</td>"
             f"<td class='{cls(r['pnl'])}'>{r['pnl_pct']:+.1f}%</td>"
-            f"<td class='{cls(r['r'])}'>{r['r']:+.2f}R</td>"
+            f"<td class='{cls(r['r'] or 0.0)}'>{_r_text(r['r'])}</td>"
             f"<td>{money(r['stop'])}</td><td>{r['days']}</td></tr>"
             for r in rows
         ) or "<tr><td colspan='9' class='muted'>No open positions.</td></tr>"

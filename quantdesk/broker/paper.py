@@ -39,6 +39,20 @@ ORDER_LIFETIME_DAYS = 5
 """How long a working order stays live before the setup is considered stale."""
 
 
+def _fmt_r(value: float | None) -> str:
+    """Render an R multiple for humans, saying so when there isn't one."""
+    return "R n/a" if value is None else f"{value:+.2f}R"
+
+
+def _round_or_none(value: float | None) -> float | None:
+    """Round an R multiple, preserving "no usable risk figure" as None.
+
+    round(None) raises, and substituting 0.0 would file a position with an
+    unknown denominator alongside genuine break-even scratches.
+    """
+    return None if value is None else round(value, 4)
+
+
 @dataclass
 class ExecutionEvent:
     """Something the broker did, for the daily report."""
@@ -226,7 +240,11 @@ class PaperBroker:
             position.highest_close = close
 
         r_now = position.r_multiple(close)
-        if r_now < profile.trail_after_r:
+        # No usable risk figure means the trail's arming condition cannot be
+        # evaluated. Leave the stop where it is rather than guessing: not
+        # trailing costs some open profit, trailing on a fabricated R could
+        # eject a working position.
+        if r_now is None or r_now < profile.trail_after_r:
             return
 
         atr_val = None
@@ -289,7 +307,7 @@ class PaperBroker:
             symbol=position.symbol, action=action, shares=shares, price=fill,
             trade_date=as_of, commission=commission, reason=reason,
             realized_pnl=round(pnl, 2), position_id=position.id,
-            r_multiple=round(position.r_multiple(fill), 4),
+            r_multiple=_round_or_none(position.r_multiple(fill)),
             holding_days=position.days_held(as_of),
             stop_trailed=abs(position.stop_price - position.initial_stop) > 1e-9,
             direction=position.direction, setup=position.setup,
@@ -306,7 +324,7 @@ class PaperBroker:
             "partial" if partial and position.shares > 0 else "exit",
             position.symbol,
             f"{'covered' if position.is_short else 'sold'} {shares} @ ${fill:,.2f} - {reason} "
-            f"(P&L ${pnl:+,.2f}, {position.r_multiple(fill):+.2f}R)",
+            f"(P&L ${pnl:+,.2f}, {_fmt_r(position.r_multiple(fill))})",
             shares=shares, price=fill, pnl=round(pnl, 2),
         ))
 
@@ -410,7 +428,7 @@ class PaperBroker:
                 setup=order.setup, risk_dollars=order.risk_dollars,
                 highest_close=fill, time_stop_days=order.time_stop_days,
                 direction=order.direction, lowest_close=fill,
-                proxy_for=order.proxy_for,
+                proxy_for=order.proxy_for, entry_shares=order.shares,
             )
             pid = self.store.add_position(position)
             self.store.record_trade(Trade(

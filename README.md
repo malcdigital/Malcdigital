@@ -267,6 +267,20 @@ quantdesk trades --file ~/.quantdesk/reports/backtest-trades.csv
   gapped through stop               1    1.1%   -1.16         2          -273
 ```
 
+**R is measured against the risk the position was sized on**, not the distance
+from the fill to the stop. Those look identical almost always. Then a limit
+order gaps through and fills at the open, below where it sat — sometimes a cent
+above the stop. Dividing by that cent produced a **−98R on a trade that lost
+$1,642**, which then dragged every average containing it: a gap bucket reading
+−2.87R when the dollars said −1.2R, and a setup showing a negative mean R
+alongside +$41,000 of profit.
+
+`risk_dollars ÷ entry_shares` is immune to where the fill landed. Both are
+recorded at entry, and `entry_shares` never moves as the position is scaled out
+— reading the live share count instead would halve the reported R on the second
+leg of a staged exit. Where no usable risk figure exists the R is `None` and the
+report counts it separately, rather than folding a fabricated number in.
+
 **One position is one trade.** A staged exit — half off at the first target,
 the rest at a trailed stop — is two fills but one result, and the R multiple is
 weighted by the share of the position each fill closed.

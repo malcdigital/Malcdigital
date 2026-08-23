@@ -82,6 +82,19 @@ def _money(v: float) -> str:
     return f"${v:,.2f}"
 
 
+def _r_text(value: float | None) -> str:
+    """An R multiple for a table cell.
+
+    A dash rather than a number when the position carries no usable risk
+    figure - printing 0.00R there would read as a break-even trade.
+    """
+    return "-" if value is None else f"{value:+.2f}R"
+
+
+def _r_value(value: float | None) -> float | None:
+    return None if value is None else round(value, 2)
+
+
 def _cls(v: float) -> str:
     return "up" if v > 0 else ("down" if v < 0 else "")
 
@@ -176,7 +189,8 @@ def _positions_table(portfolio, prices) -> str:
             f'<td>{p.shares}</td><td>{_money(p.entry_price)}</td><td>{_money(price)}</td>'
             f'<td class="{_cls(pnl)}">{pnl:+,.2f}</td>'
             f'<td class="{_cls(pnl)}">{p.unrealized_pct(price):+.1f}%</td>'
-            f'<td class="{_cls(p.r_multiple(price))}">{p.r_multiple(price):+.2f}R</td>'
+            f'<td class="{_cls(p.r_multiple(price) or 0.0)}">'
+            f'{_r_text(p.r_multiple(price))}</td>'
             f'<td>{_money(p.stop_price)}</td><td>{p.days_held()}</td></tr>'
         )
     return (
@@ -389,7 +403,7 @@ def state_json(engine) -> dict:
                 "unrealized": round(
                     p.unrealized_pnl(prices.get(p.symbol, p.entry_price)), 2
                 ),
-                "r": round(p.r_multiple(prices.get(p.symbol, p.entry_price)), 2),
+                "r": _r_value(p.r_multiple(prices.get(p.symbol, p.entry_price))),
                 "stop": p.stop_price,
             }
             for p in portfolio.positions

@@ -30,6 +30,11 @@ def red(t: str) -> str:
     return _c(t, "31")
 
 
+def _r_cell(value: float | None) -> str:
+    """An R multiple for a fixed-width column, blank when there isn't one."""
+    return "  -" if value is None else f"{value:+.2f}"
+
+
 def dim(t: str) -> str:
     return _c(t, "2")
 
@@ -687,7 +692,7 @@ def cmd_status(args) -> int:
             price = prices.get(p.symbol, p.entry_price)
             print(f"  {p.symbol:<7}{p.shares:>5}{p.entry_price:>10,.2f}{price:>10,.2f}"
                   f"{p.unrealized_pnl(price):>+12,.2f}{p.unrealized_pct(price):>+8.1f}"
-                  f"{p.r_multiple(price):>+7.2f}{p.stop_price:>10,.2f}"
+                  f"{_r_cell(p.r_multiple(price)):>7}{p.stop_price:>10,.2f}"
                   f"{p.days_held():>6}")
 
     pending = engine.store.pending_orders()
