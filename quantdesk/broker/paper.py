@@ -458,6 +458,14 @@ class PaperBroker:
                         "reserve floor",
                     ))
                     continue
+                # risk_dollars is the budget the original size was derived
+                # from. Carrying it over intact would spread the same budget
+                # across fewer shares, inflating planned risk per share - which
+                # reads back as a smaller R and pushes the rebased targets out
+                # past where the plan put them.
+                if order.shares > 0:
+                    order.risk_dollars = round(
+                        order.risk_dollars * affordable / order.shares, 2)
                 order.shares = affordable
                 commission = self._commission(order.shares)
                 cost = order.shares * fill + commission

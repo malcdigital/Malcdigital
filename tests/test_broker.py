@@ -97,6 +97,27 @@ def test_position_limit_blocks_new_fills(desk):
     assert any("position limit" in e.detail for e in summary.events)
 
 
+def test_trimming_an_order_trims_its_risk_budget_with_it(desk):
+    """The budget belongs to the size it was derived from.
+
+    An order cut back to fit the cash reserve keeps the same per-share distance
+    to its stop, so its risk budget has to shrink in step. Leaving the whole
+    budget on a smaller position inflates planned risk per share, which halves
+    the R the position reports and pushes its rebased targets out past where
+    the plan put them.
+    """
+    store, broker = desk(cash=100_000.0)
+    order = buy_order("market", trigger=None, shares=1000, stop=145.0)
+    order.risk_dollars = 5000.0  # $5/share over 1000 shares
+    store.add_order(order)
+    summary = broker.process_day({"AAPL": one_bar(150, 155, 149, 154)}, date(2026, 1, 5))
+
+    assert any("trimmed to" in e.detail for e in summary.events)
+    position = store.open_positions()[0]
+    assert position.entry_shares < 1000
+    assert position.planned_risk_per_share() == pytest.approx(5.0, abs=0.01)
+
+
 # --- exits ------------------------------------------------------------------
 def test_stop_loss_fills_at_the_stop(desk):
     store, broker = desk()
