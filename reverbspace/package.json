@@ -1,0 +1,14 @@
+{
+  "name": "reverbspace",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A reverb you tune by moving around the room instead of turning knobs.",
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "start": "python3 -m http.server 8123"
+  },
+  "devDependencies": {
+    "playwright": "^1.62.1"
+  }
+}

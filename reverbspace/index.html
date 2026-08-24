@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ReverbSpace</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2032%2032%22%3E%3Crect%20width%3D%2232%22%20height%3D%2232%22%20rx%3D%227%22%20fill%3D%22%2312151d%22%2F%3E%3Ccircle%20cx%3D%2216%22%20cy%3D%2216%22%20r%3D%224%22%20fill%3D%22%23e8a33d%22%2F%3E%3Ccircle%20cx%3D%2216%22%20cy%3D%2216%22%20r%3D%228.5%22%20fill%3D%22none%22%20stroke%3D%22%23e8a33d%22%20stroke-opacity%3D%22.6%22%20stroke-width%3D%221.6%22%2F%3E%3Ccircle%20cx%3D%2216%22%20cy%3D%2216%22%20r%3D%2213%22%20fill%3D%22none%22%20stroke%3D%22%23e8a33d%22%20stroke-opacity%3D%22.28%22%20stroke-width%3D%221.4%22%2F%3E%3C%2Fsvg%3E">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<header class="bar">
+  <div class="brand">
+    <span class="dot"></span>
+    <h1>ReverbSpace</h1>
+    <span class="tag">stand somewhere and listen</span>
+  </div>
+
+  <div class="transport">
+    <div class="sources" id="sources"></div>
+    <button class="btn" id="play">Play</button>
+    <label class="toggle"><input type="checkbox" id="loop"> loop</label>
+    <label class="btn file">Load file<input type="file" id="file" accept="audio/*" hidden></label>
+    <button class="btn" id="live">Live in</button>
+  </div>
+
+  <div class="meters">
+    <div class="meter"><span>in</span><div class="track"><i id="meter-in"></i></div></div>
+    <div class="meter"><span>out</span><div class="track"><i id="meter-out"></i></div></div>
+    <button class="btn danger" id="bypass">Bypass</button>
+  </div>
+</header>
+
+<main>
+  <section class="stage">
+    <canvas id="room"></canvas>
+    <div class="overlay" id="overlay">
+      <p><strong>Click anywhere to start audio.</strong></p>
+      <p>Then drag the <em>performer</em> and the <em>mic</em> around the room. Drag the white
+         dots on the walls to resize it. Drag the background to orbit, scroll to zoom.</p>
+    </div>
+    <div class="legend">
+      <span><i class="k-direct"></i>direct</span>
+      <span><i class="k-wall"></i>wall</span>
+      <span><i class="k-ceil"></i>ceiling</span>
+      <span><i class="k-floor"></i>floor</span>
+      <label class="toggle"><input type="checkbox" id="rays" checked> show rays</label>
+    </div>
+  </section>
+
+  <aside class="panel">
+    <div class="group">
+      <h2>Space</h2>
+      <div class="presets" id="presets"></div>
+      <p class="blurb" id="preset-blurb"></p>
+    </div>
+
+    <div class="group">
+      <h2>Size</h2>
+      <label class="row"><span>scale</span>
+        <input type="range" id="scale" min="0.4" max="2.6" step="0.01" value="1">
+        <output id="scale-out">100%</output>
+      </label>
+      <label class="row"><span>height</span>
+        <input type="range" id="height" min="2" max="40" step="0.1" value="3.2">
+        <output id="height-out">3.2 m</output>
+      </label>
+      <p class="blurb">Or grab a wall in the room and pull it.</p>
+    </div>
+
+    <div class="group">
+      <h2>Soundproofing</h2>
+      <label class="row"><span>amount</span>
+        <input type="range" id="treat" min="0" max="1" step="0.01" value="0.35">
+        <output id="treat-out">35%</output>
+      </label>
+      <label class="row"><span>type</span>
+        <select id="treat-type"></select>
+      </label>
+      <p class="blurb" id="treat-blurb"></p>
+    </div>
+
+    <div class="group">
+      <h2>Performer</h2>
+      <label class="row"><span>height</span>
+        <input type="range" id="src-h" min="0.2" max="3" step="0.01" value="1.6">
+        <output id="src-h-out">1.60 m</output>
+      </label>
+    </div>
+
+    <div class="group">
+      <h2>Microphone</h2>
+      <label class="row"><span>type</span><select id="mic-type"></select></label>
+      <p class="blurb" id="mic-blurb"></p>
+      <label class="row"><span>distance</span>
+        <input type="range" id="mic-d" min="0.08" max="30" step="0.01" value="0.4">
+        <output id="mic-d-out">0.40 m</output>
+      </label>
+      <label class="row"><span>height</span>
+        <input type="range" id="mic-h" min="0.1" max="8" step="0.01" value="1.4">
+        <output id="mic-h-out">1.40 m</output>
+      </label>
+      <label class="row"><span>aim</span>
+        <input type="range" id="mic-az" min="-180" max="180" step="1" value="0">
+        <output id="mic-az-out">0&deg;</output>
+      </label>
+      <label class="toggle"><input type="checkbox" id="mic-aim" checked> keep pointed at the performer</label>
+    </div>
+
+    <div class="group">
+      <h2>Output</h2>
+      <label class="row"><span>mix</span>
+        <input type="range" id="mix" min="0" max="1" step="0.01" value="1">
+        <output id="mix-out">100%</output>
+      </label>
+      <label class="row"><span>level</span>
+        <input type="range" id="output" min="0" max="2" step="0.01" value="1">
+        <output id="output-out">0.0 dB</output>
+      </label>
+      <label class="toggle"><input type="checkbox" id="room-only"> room only (mute direct)</label>
+    </div>
+
+    <div class="group stats">
+      <h2>What that gives you</h2>
+      <dl id="stats"></dl>
+    </div>
+  </aside>
+</main>
+
+<footer class="readouts">
+  <figure>
+    <figcaption>What reaches the mic <em>&mdash; direct, then every reflection, then the tail</em></figcaption>
+    <canvas id="echogram"></canvas>
+  </figure>
+  <figure>
+    <figcaption>Reverberation time per band <em>&mdash; how long each part of the spectrum rings</em></figcaption>
+    <canvas id="decay"></canvas>
+  </figure>
+</footer>
+
+<script type="module" src="src/app.js"></script>
+</body>
+</html>
