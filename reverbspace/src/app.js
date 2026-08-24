@@ -79,7 +79,16 @@ function boot() {
       audio.sendDesign(designReverb(response, audio.ctx.sampleRate));
       pushControls();
     } catch (err) {
-      $('overlay').innerHTML = `<p><strong>Audio failed to start.</strong></p><p>${err.message}</p>`;
+      // Opened straight off the disk, the page has an opaque origin and the
+      // browser refuses to load the worklet. Everything visual still works.
+      const local = location.protocol === 'file:';
+      $('overlay').classList.remove('gone');
+      $('overlay').innerHTML = local
+        ? `<p><strong>The room works, but audio cannot start from a file:// page.</strong></p>
+           <p>Browsers refuse to load audio worklets off the local disk. Serve the folder
+              instead &mdash; <code>python3 -m http.server 8123</code> &mdash; and open it
+              over http.</p>`
+        : `<p><strong>Audio failed to start.</strong></p><p>${err.message}</p>`;
     }
   };
   document.body.addEventListener('pointerdown', kick, { once: true });

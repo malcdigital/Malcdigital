@@ -9,13 +9,23 @@ as the reverb you hear. The rays on screen are the reflection paths the DSP is
 actually rendering, not decoration.
 
 ```
-npm install          # playwright, for the browser smoke test only
 npm start            # serves on http://localhost:8123
 npm test             # the acoustics and DSP suites
+npm run bundle       # dist/reverbspace.html -- the whole app in one file
+npm install && npm run smoke   # browser checks (playwright)
 ```
 
 No build step and no runtime dependencies. Open `index.html` from any static
 server and it runs.
+
+`npm run bundle` folds all thirteen modules, the stylesheet and the synthesised
+test sounds into a single 124 KB HTML file, rebuilding the modules as blob URLs
+in dependency order so the imports still resolve.
+
+**It has to be served over http, not opened as a `file://` path.** A page loaded
+off the disk has an opaque origin, and browsers refuse to load an audio worklet
+into one — the room, the dragging and every number still work, but it is silent.
+The app says so if you try it.
 
 ## What you can move
 

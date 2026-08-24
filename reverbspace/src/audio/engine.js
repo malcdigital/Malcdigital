@@ -3,7 +3,11 @@
 
 import { buildTestSources, TEST_SOURCES } from './sources.js';
 
-const WORKLET_URL = new URL('../dsp/reverb-worklet.js', import.meta.url);
+// An AudioWorklet can only be loaded from a URL. Normally that is the file
+// next door; the single-file build hands us a blob URL instead, since there is
+// no file to point at.
+const WORKLET_URL = globalThis.__REVERBSPACE_WORKLET_URL__
+  || new URL('../dsp/reverb-worklet.js', import.meta.url);
 
 export class AudioEngine {
   constructor() {

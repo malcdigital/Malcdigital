@@ -44,7 +44,8 @@ page.on('pageerror', (e) => problems.push('pageerror: ' + e.message));
 page.on('console', (m) => { if (m.type() === 'error') problems.push('console: ' + m.text()); });
 page.on('requestfailed', (r) => problems.push(`requestfailed: ${r.url()} ${r.failure()?.errorText}`));
 
-await page.goto(`${BASE}/index.html`, { waitUntil: 'networkidle' });
+const PAGE = process.env.PAGE_URL || `${BASE}/index.html`;
+await page.goto(PAGE, { waitUntil: 'networkidle' });
 await page.waitForTimeout(600);
 await page.mouse.click(700, 400);
 await page.waitForTimeout(1200);
@@ -62,11 +63,13 @@ const painted = () => page.evaluate(() => {
 });
 
 const worklet = await page.evaluate(async () => {
-  const { AudioEngine } = await import('/src/audio/engine.js');
-  const e = new AudioEngine();
+  // The app has already started audio from the click above; ask it directly, so
+  // this works for the bundled single-file build too.
+  const rs = window.reverbspace;
+  if (!rs) return { ok: false, error: 'app never booted' };
   try {
-    await e.start();
-    return { ok: true, sampleRate: e.ctx.sampleRate, node: !!e.node };
+    await rs.audio.start();
+    return { ok: true, sampleRate: rs.audio.ctx.sampleRate, node: !!rs.audio.node };
   } catch (err) {
     return { ok: false, error: String(err && err.message || err) };
   }
