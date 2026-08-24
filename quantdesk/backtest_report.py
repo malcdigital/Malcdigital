@@ -8,6 +8,9 @@ from quantdesk.analysis.trades import analyze_trades
 from quantdesk.analysis.trades import to_text as trades_to_text
 from quantdesk.backtest import BacktestResult, verdict
 from quantdesk.portfolio.report import DISCLAIMER
+from quantdesk.stress import DEFAULT_MIN_DEPTH_PCT as STRESS_MIN_DEPTH_PCT
+from quantdesk.stress import drawdown_episodes
+from quantdesk.stress import to_text as stress_to_text
 from quantdesk.web.charts import equity_comparison
 
 E = html.escape
@@ -82,6 +85,17 @@ def to_text(result: BacktestResult, width: int = 78) -> str:
     breakdown = analyze_trades(result.trades)
     if breakdown.closed:
         L += ["", trades_to_text(breakdown, width)]
+
+    if result.benchmark_curve:
+        # Placed before the verdict because it qualifies the drawdown row
+        # above: falling less than the index is only half of defensive.
+        # One floor, used to select the episodes and to describe them. Passing
+        # different values to the two calls prints a table of 5% drawdowns
+        # under a heading that says 10%.
+        floor = STRESS_MIN_DEPTH_PCT
+        episodes = drawdown_episodes(result.benchmark_curve, result.equity_curve,
+                                     min_depth_pct=floor)
+        L += ["", stress_to_text(episodes, width, min_depth_pct=floor)]
 
     L += ["", "VERDICT", thin]
     for line in verdict(result):
