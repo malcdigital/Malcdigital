@@ -48,13 +48,17 @@ class Camera {
     this.eyeAt = { x: 0, y: 1.6, z: 0 };
     this.fov = 74;
     this.orbitFov = 52;
+    /** Pixels to lift the vanishing point by, when something covers the bottom. */
+    this.bias = 0;
   }
 
   update(w, h) {
     this.cx = w / 2;
-    this.cy = h / 2;
+    this.cy = h / 2 - this.bias;
     const fov = this.mode === 'first' ? this.fov : this.orbitFov;
-    this.focal = (w / 2) / Math.tan((fov * Math.PI) / 360);
+    // Size the lens off the long edge. Driving it from the width alone gives a
+    // portrait phone a ~100 degree vertical field, which bends the room.
+    this.focal = (Math.max(w, h) / 2) / Math.tan((fov * Math.PI) / 360);
 
     if (this.mode === 'first') {
       this.eye = { ...this.eyeAt };
@@ -228,6 +232,8 @@ export class RoomScene {
     this.w = 1;
     this.h = 1;
 
+    /** Height at the bottom of the canvas that something else is covering. */
+    this.reserved = 0;
     this.showRays = true;
     this.slowMotion = 55;
     this.rayClock = 0;
@@ -1012,12 +1018,19 @@ export class RoomScene {
 
   minimapRect() {
     const { w, d } = this.state.dims;
-    const maxW = 176, maxH = 148;
+    // Sized off the canvas, so it stays a plan in the corner on a phone rather
+    // than taking half the screen.
+    const maxW = clamp(this.w * 0.3, 84, 176);
+    const maxH = clamp(this.h * 0.24, 68, 148);
     const scale = Math.min(maxW / w, maxH / d);
-    return { x: 14, y: this.h - d * scale - 34, w: w * scale, h: d * scale, scale };
+    const bottom = this.h - this.reserved - 34;
+    return { x: 14, y: bottom - d * scale, w: w * scale, h: d * scale, scale };
   }
 
   drawMinimap(g) {
+    // With the controls sheet up, the room is a thin strip; a plan floating in
+    // it would cover the very thing the strip exists to show.
+    if (this.h - this.reserved < 210) return;
     const { w, d } = this.state.dims;
     const R = this.minimapRect();
     const toMap = (p) => ({ x: R.x + p.x * R.scale, y: R.y + p.z * R.scale });
@@ -1096,6 +1109,7 @@ export class RoomScene {
 
   render(dtMs) {
     if (!this.state) return;
+    this.cam.bias = this.reserved / 2;
     const g = this.ctx;
     const { w: W, h: H } = this;
     g.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);

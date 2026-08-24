@@ -47,7 +47,22 @@ function boot() {
   bindControls();
   applyPreset('studio', true);
 
+  bindSheet();
+  // The keyboard hints are no use on a phone.
+  if (window.matchMedia && window.matchMedia('(pointer: coarse)').matches) {
+    $('overlay').innerHTML =
+      '<p><strong>Tap to start audio.</strong></p>' +
+      '<p>You are standing in the room. <em>Drag</em> to look around, drag the <em>mic</em> ' +
+      'to move it, and drag either marker on the plan to walk about. ' +
+      'Pull up <em>Controls</em> to change the space.</p>';
+  }
+
   window.addEventListener('resize', () => { resize(); dirty = true; });
+  // Rotating a phone, or opening the sheet, changes the stage without ever
+  // firing a window resize.
+  if (window.ResizeObserver) {
+    new ResizeObserver(() => { resize(); dirty = true; }).observe($('room').parentElement);
+  }
   resize();
 
   let last = performance.now();
@@ -100,7 +115,46 @@ function boot() {
 
 function resize() {
   scene.resize();
+  updateReserved();
   drawViews();
+}
+
+/**
+ * How much of the room the controls sheet is hiding. The scene lifts its
+ * vanishing point by half of it, so what you are looking at stays in the part
+ * of the screen you can still see.
+ */
+function updateReserved() {
+  const sheet = $('sheet');
+  if (!sheet || getComputedStyle(sheet).position !== 'fixed') {
+    scene.reserved = 0;
+    return;
+  }
+  const stage = $('room').getBoundingClientRect();
+  const box = sheet.getBoundingClientRect();
+  // Use what the sheet actually covers: clamping it short leaves the mic
+  // behind the sheet, which is the whole problem this is meant to solve.
+  scene.reserved = Math.max(0, Math.min(stage.bottom - box.top, stage.height * 0.82));
+}
+
+function bindSheet() {
+  const sheet = $('sheet');
+  const handle = $('sheet-handle');
+  if (!handle) return;
+  const settle = () => { resize(); dirty = true; };
+  handle.addEventListener('click', () => {
+    const open = sheet.classList.toggle('open');
+    handle.setAttribute('aria-expanded', String(open));
+    $('sheet-label').textContent = open ? 'Hide controls' : 'Controls & analysis';
+    settle();
+    // Follow the slide, so the view keeps pace with the sheet.
+    const t0 = performance.now();
+    const step = () => {
+      settle();
+      if (performance.now() - t0 < 380) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  });
 }
 
 // -------------------------------------------------------------- the pipeline

@@ -32,7 +32,10 @@ The app says so if you try it.
 
 Two cameras over the same room. **Standing in it** puts your eyes at the
 performer's head: drag to look, `W A S D` to walk, scroll to step forward and
-back. **From outside** lifts the ceiling and the near walls off so you can see
+back. On a phone the room takes the whole screen and the controls live in a
+sheet you pull up from the bottom; with it open the view lifts its vanishing
+point so whatever you are aiming at stays in the strip you can still see. Drag
+to look, and drag either marker on the plan to move. **From outside** lifts the ceiling and the near walls off so you can see
 the whole room and drag the walls to resize it. Either way the plan in the
 corner shows where you and the mic are, and both markers can be dragged on it.
 

@@ -54,6 +54,11 @@
     </div>
   </section>
 
+  <div class="sheet" id="sheet">
+    <button class="sheet-handle" id="sheet-handle" aria-expanded="false" aria-controls="sheet">
+      <span class="grip"></span><span class="sheet-label" id="sheet-label">Controls &amp; analysis</span>
+    </button>
+
   <aside class="panel">
     <div class="group">
       <h2>Space</h2>
@@ -131,8 +136,6 @@
       <dl id="stats"></dl>
     </div>
   </aside>
-</main>
-
 <footer class="readouts">
   <figure>
     <figcaption>What reaches the mic <em>&mdash; direct, then every reflection, then the tail</em></figcaption>
@@ -143,6 +146,8 @@
     <canvas id="decay"></canvas>
   </figure>
 </footer>
+  </div>
+</main>
 
 <script type="module" src="src/app.js"></script>
 </body>
