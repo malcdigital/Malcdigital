@@ -24,11 +24,11 @@ export const PRESETS = [
     blurb: 'Small, dead, controlled. The tail is over before you notice it.',
     dims: { w: 7.5, d: 5.5, h: 3.2 },
     sizeRange: [0.45, 2.6],
-    surfaces: { floor: 'woodFloor', ceiling: 'drywall', walls: 'drywall' },
+    surfaces: { floor: 'woodFloor', ceiling: 'woodPanel', walls: 'woodPanel' },
     seating: null,
     treatment: { coverage: 0.35, type: 'rockwool' },
     sourceAt: { x: 0.5, z: 0.35 },
-    micDistance: 0.4,
+    micDistance: 0.85,
     palette: '#e8a33d',
   },
   {

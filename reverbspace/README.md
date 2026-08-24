@@ -2,11 +2,12 @@
 
 A reverb you tune by moving around a room instead of turning knobs.
 
-Pick a space — studio, concert hall, cathedral, theatre — then resize it, hang
-soundproofing on the walls, stand somewhere, and put a mic somewhere else. Every
-one of those changes runs through a real room-acoustics model and comes back out
-as the reverb you hear. The rays on screen are the reflection paths the DSP is
-actually rendering, not decoration.
+You are standing in the room. Look around, walk about, and the mic is on its
+stand in front of you. Pick a space — studio, concert hall, cathedral, theatre —
+then resize it, hang soundproofing on the walls, and move yourself or the mic.
+Every one of those changes runs through a real room-acoustics model and comes
+back out as the reverb you hear. The rays on screen are the reflection paths the
+DSP is actually rendering, not decoration.
 
 ```
 npm start            # serves on http://localhost:8123
@@ -27,6 +28,21 @@ off the disk has an opaque origin, and browsers refuse to load an audio worklet
 into one — the room, the dragging and every number still work, but it is silent.
 The app says so if you try it.
 
+## Getting around
+
+Two cameras over the same room. **Standing in it** puts your eyes at the
+performer's head: drag to look, `W A S D` to walk, scroll to step forward and
+back. **From outside** lifts the ceiling and the near walls off so you can see
+the whole room and drag the walls to resize it. Either way the plan in the
+corner shows where you and the mic are, and both markers can be dragged on it.
+
+What you see is what the model is using. The walls are the materials the
+absorption figures come from, the panels and hanging clouds are the treated
+area the coverage control sets, and the lobe around the capsule is the mic's
+polar pattern. Switch from the omni to the large condenser in the studio and one
+of the six reflection rays disappears — that is the cardioid's rear null killing
+the bounce off the wall behind it, straight out of the physics.
+
 ## What you can move
 
 | Control | What it does to the sound |
@@ -34,7 +50,7 @@ The app says so if you try it.
 | **Space** | Swaps the surface materials — plasterboard, wood, stone, marble, seating |
 | **Size** | Scales the room, or drag a wall in the 3D view to stretch one dimension |
 | **Soundproofing** | Covers walls and ceiling in foam, rockwool, drapes or diffusers |
-| **Where you stand** | Drag the performer; changes which reflections arrive and when |
+| **Where you stand** | Walk around; changes which reflections arrive and when |
 | **Mic distance** | Drag the mic; the direct sound falls off, the room doesn't |
 | **Mic type** | Polar pattern, on-axis tone, off-axis dulling, proximity effect |
 
@@ -118,7 +134,12 @@ still matches the model.
 
 ## Known limits
 
-- Shoebox rooms only. No balconies, no transepts, no angled walls.
+- Shoebox rooms only. No balconies, no transepts, no angled walls. The room you
+  see is drawn to the same box the model solves, so it cannot show what the
+  model cannot hear.
+- Doors, sconces, seat backs and beams are set dressing: they are drawn to give
+  the space a human scale, and they are *not* in the acoustic model. Only the
+  surfaces, the dimensions and the treated area are.
 - Third-order image sources; past that the tail takes over, which is the usual
   trade but does mean small, hard rooms are less exact than large ones.
 - Diffusers are modelled as scattering that moves energy out of the discrete

@@ -36,6 +36,10 @@ function boot() {
     syncInputs();
     dirty = true;
   };
+  scene.onModeChange = (mode) => {
+    $('view-first').classList.toggle('on', mode === 'first');
+    $('view-orbit').classList.toggle('on', mode === 'orbit');
+  };
 
   buildPresets();
   buildSources();
@@ -102,6 +106,7 @@ function resize() {
 // -------------------------------------------------------------- the pipeline
 
 function recompute() {
+  clampOccupants(state);
   response = analyze(state);
   scene.setState(state, response);
   if (audio.ready) audio.sendDesign(designReverb(response, audio.ctx.sampleRate));
@@ -258,6 +263,8 @@ function bindControls() {
   });
   on('room-only', 'change', pushControls);
   on('rays', 'change', (e) => { scene.showRays = e.target.checked; });
+  on('view-first', 'click', () => scene.setMode('first'));
+  on('view-orbit', 'click', () => scene.setMode('orbit'));
 
   on('bypass', 'click', () => {
     $('bypass').classList.toggle('on');
