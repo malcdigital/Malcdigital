@@ -142,18 +142,26 @@ function bindSheet() {
   const handle = $('sheet-handle');
   if (!handle) return;
   const settle = () => { resize(); dirty = true; };
+  // The slide is what decides how much of the room is covered, so wait for it
+  // to finish. A frame-counted loop is not enough: on a slow device too few
+  // frames land inside the transition and the view keeps the closed offset.
+  sheet.addEventListener('transitionend', (e) => {
+    if (e.propertyName === 'transform') settle();
+  });
   handle.addEventListener('click', () => {
     const open = sheet.classList.toggle('open');
     handle.setAttribute('aria-expanded', String(open));
     $('sheet-label').textContent = open ? 'Hide controls' : 'Controls & analysis';
     settle();
-    // Follow the slide, so the view keeps pace with the sheet.
+    // Follow the slide so the view keeps pace, and settle once more after it
+    // should have ended, in case the transition event never arrives.
     const t0 = performance.now();
     const step = () => {
       settle();
-      if (performance.now() - t0 < 380) requestAnimationFrame(step);
+      if (performance.now() - t0 < 420) requestAnimationFrame(step);
     };
     requestAnimationFrame(step);
+    setTimeout(settle, 460);
   });
 }
 

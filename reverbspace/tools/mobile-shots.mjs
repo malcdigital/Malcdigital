@@ -18,7 +18,8 @@ const BASE = process.env.BASE_URL || 'http://localhost:8123/index.html';
 /** A real finger drag: pointer events, not a mouse. */
 async function page_drag(p, x0, y0, x1, y1) {
   await p.evaluate(([ax, ay, bx, by]) => {
-    const el = document.querySelector('#room');
+    // The HUD canvas sits over the WebGL one and is what pointers land on.
+    const el = document.querySelector('#room-hud') || document.querySelector('#room');
     const send = (type, x, y, extra = {}) => el.dispatchEvent(new PointerEvent(type, {
       pointerId: 1, pointerType: 'touch', isPrimary: true, bubbles: true, cancelable: true,
       clientX: x, clientY: y, ...extra,
@@ -36,9 +37,9 @@ async function page_drag(p, x0, y0, x1, y1) {
 const browser = await chromium.launch({ executablePath: findChrome(), args: ['--autoplay-policy=no-user-gesture-required'] });
 
 const cases = [
-  ['phone-portrait', { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 }],
-  ['phone-landscape', { viewport: { width: 844, height: 390 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 }],
-  ['tablet', { viewport: { width: 820, height: 1180 }, isMobile: true, hasTouch: true, deviceScaleFactor: 2 }],
+  ['phone-portrait', { viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: Number(process.env.DPR || 1) }],
+  ['phone-landscape', { viewport: { width: 844, height: 390 }, isMobile: true, hasTouch: true, deviceScaleFactor: Number(process.env.DPR || 1) }],
+  ['tablet', { viewport: { width: 820, height: 1180 }, isMobile: true, hasTouch: true, deviceScaleFactor: Number(process.env.DPR || 1) }],
 ];
 
 for (const [name, opts] of cases) {
