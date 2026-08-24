@@ -52,8 +52,14 @@ await page.waitForTimeout(1200);
 
 /** How much of the room canvas is actually painted. */
 const painted = () => page.evaluate(() => {
+  // The room is a WebGL canvas, so copy it into a 2D one to read the pixels.
   const c = document.querySelector('#room');
-  const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+  const tmp = document.createElement('canvas');
+  tmp.width = c.width;
+  tmp.height = c.height;
+  const g = tmp.getContext('2d');
+  g.drawImage(c, 0, 0);
+  const d = g.getImageData(0, 0, tmp.width, tmp.height).data;
   let lit = 0, total = 0;
   for (let i = 0; i < d.length; i += 4000) {
     total++;
@@ -92,6 +98,8 @@ check('page loads with no errors', problems.length === 0, problems.join(' | '));
 check('AudioWorklet module loads (ES imports work inside the worklet)',
   worklet.ok, worklet.ok ? `${worklet.sampleRate} Hz` : worklet.error);
 check('room canvas paints', (await painted()) > 0.25);
+check('WebGL renderer came up', await page.evaluate(() => !window.reverbspace.scene.failed),
+  await page.evaluate(() => window.reverbspace.scene.failed || ''));
 check('stats populate', info.stats >= 8, `${info.stats} rows`);
 check('presets and sources render', info.presets === 4 && info.sources >= 5);
 check('start overlay dismisses', info.overlayGone);

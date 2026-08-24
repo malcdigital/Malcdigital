@@ -25,7 +25,7 @@ let dirty = true;
 // ------------------------------------------------------------------ startup
 
 function boot() {
-  scene = new RoomScene($('room'));
+  scene = new RoomScene($('room'), $('room-hud'));
   scene.onChange = (what) => {
     if (what === 'dims') {
       // A dragged wall breaks the link to the preset's base size.

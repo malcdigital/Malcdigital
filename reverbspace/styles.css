@@ -89,7 +89,16 @@ main {
 .sheet-handle { display: none; }
 
 .stage { position: relative; min-height: 0; }
-#room { width: 100%; height: 100%; display: block; touch-action: none; cursor: move; }
+#room, #room-hud {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+/* The room is drawn in WebGL; rays, the plan and the labels sit over it in 2D,
+   which is also where the pointer lands. */
+#room-hud { touch-action: none; cursor: move; }
 
 .overlay {
   position: absolute; inset: auto 0 0 0;
@@ -125,6 +134,7 @@ main {
 }
 .legend span { display: flex; align-items: center; gap: 6px; }
 .legend i { width: 13px; height: 2.5px; border-radius: 2px; }
+.legend .note { margin-top: 4px; padding-top: 5px; border-top: 1px solid var(--line); font-size: 10px; line-height: 1.35; opacity: 0.75; }
 .k-direct { background: #fff; }
 .k-wall { background: var(--accent); }
 .k-ceil { background: #7fd6ff; }
