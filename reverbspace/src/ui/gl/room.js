@@ -43,6 +43,7 @@ export function buildRoom(state) {
     ceiling: new MeshBuilder(),
     trim: new MeshBuilder(),
     panels: new MeshBuilder(),
+    panelsAlt: new MeshBuilder(),
     metal: new MeshBuilder(),
     glow: new MeshBuilder(),
     glass: new MeshBuilder(),
@@ -116,7 +117,9 @@ export function buildRoom(state) {
         // Give the slab depth on the axis it stands off the wall.
         if (wall.n[0] !== 0) { lo[0] -= thick * (wall.n[0] > 0 ? 0 : 1); hi[0] += thick * (wall.n[0] > 0 ? 1 : 0); }
         else { lo[2] -= thick * (wall.n[2] > 0 ? 0 : 1); hi[2] += thick * (wall.n[2] > 0 ? 1 : 0); }
-        out.panels.box(lo, hi);
+        // A third of them in a second tone: nobody hangs a wall of identical
+        // panels, and the variation is what stops it reading as wallpaper.
+        (hash(wall.id * 31 + idx, 57) < 0.34 ? out.panelsAlt : out.panels).box(lo, hi);
       }
     }
 
@@ -132,6 +135,10 @@ export function buildRoom(state) {
       if (y < state.source.height + 0.35) continue;
       const rot = (hash(i, 401) - 0.5) * 0.9;
       out.panels.boxRotY([cx, y, cz], [cw, 0.1, cd], rot);
+      // A frame round the edge, so a cloud reads as a built absorber rather
+      // than a floating slab.
+      const fr = 0.05;
+      out.metal.boxRotY([cx, y, cz], [cw + fr, 0.045, cd + fr], rot);
       const ca = Math.cos(rot), sa = Math.sin(rot);
       for (const [ox, oz] of [[-cw / 2 + 0.12, -cd / 2 + 0.1], [cw / 2 - 0.12, cd / 2 - 0.1]]) {
         const px = cx + ox * ca - oz * sa;
@@ -222,11 +229,29 @@ export function buildRoom(state) {
   }
 
   // ---- decoration: drawn, not modelled -----------------------------------
-  // Spare stands leaning in a corner, and a stool. These do not absorb.
-  for (let i = 0; i < 3; i++) {
-    const bx = w - 0.55 - i * 0.22, bz = d - 0.5;
-    out.decor.tube([bx, 0.02, bz], [bx + 0.1, 1.5 + i * 0.1, bz - 0.25], 0.016, 6);
-    out.decor.box([bx - 0.16, 0, bz - 0.16], [bx + 0.16, 0.03, bz + 0.16]);
+  // Spare stands along a wall, coiled cable on hooks, a stool. None of this
+  // absorbs anything; it is here because a room without it looks unused.
+  const stands = clamp(Math.round(d / 1.1), 2, 7);
+  for (let i = 0; i < stands; i++) {
+    const bz = clamp(d * 0.35 + i * 0.26, 0.4, d - 0.4);
+    const bx = w - 0.42;
+    out.decor.tube([bx, 0.02, bz], [bx - 0.12 - (i % 2) * 0.04, 1.42 + (i % 3) * 0.13, bz - 0.1], 0.015, 6);
+    out.decor.box([bx - 0.15, 0, bz - 0.15], [bx + 0.14, 0.025, bz + 0.15]);
+  }
+  if (h > 2.2 && w > 3) {
+    const hookY = clamp(h * 0.42, 1.1, 1.9);
+    const rows = 2;
+    const per = clamp(Math.round(w / 1.9), 2, 4);
+    for (let r0 = 0; r0 < rows; r0++) {
+      for (let i = 0; i < per; i++) {
+        // Kept to one side: the control-room window is in the middle of this
+        // wall, and nobody hangs their cable run across the glass.
+        const cx = w * 0.06 + ((i + 0.5) / per) * (w * 0.26);
+        const cy = hookY - r0 * 0.4;
+        out.decor.ring([cx, cy, 0.07], 0.13, 0.02, 'z');
+        out.decor.tube([cx, cy + 0.14, 0.015], [cx, cy + 0.14, 0.06], 0.011, 5);
+      }
+    }
   }
   const sx = 0.75, sz = d - 0.9;
   out.decor.box([sx - 0.19, 0.56, sz - 0.19], [sx + 0.19, 0.62, sz + 0.19]);

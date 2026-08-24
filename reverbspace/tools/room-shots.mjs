@@ -50,6 +50,7 @@ const shot = async (name, spec) => {
 await shot('studio-mic', ['studio', 3.7, 4.2, Math.PI, -0.06, 0.9]);
 await shot('studio-along', ['studio', 2.2, 4.4, -2.2, 0.02, 1.1]);
 await shot('studio-up', ['studio', 3.7, 3.2, 2.6, 0.5, 1.0]);
+await shot('studio-floor', ['studio', 3.7, 3.0, 2.4, -0.62, 1.0]);
 await shot('hall-inside', ['hall', 13, 30, Math.PI, 0.06, 3]);
 await shot('cathedral-inside', ['cathedral', 12, 50, Math.PI, 0.22, 5]);
 await b.close();

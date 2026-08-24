@@ -14,8 +14,10 @@ import { MATERIALS, TREATMENTS } from '../core/materials.js';
 import { PRESETS_BY_ID } from '../core/presets.js';
 import { MICS_BY_ID, polarGain } from '../core/mics.js';
 import { reflectionPaths, SPEED_OF_SOUND } from '../core/acoustics.js';
-import { buildProgram } from './gl/shaders.js';
-import { MeshBuilder, perspectiveOffset, viewMatrix, multiply } from './gl/mesh.js';
+import { buildProgram, DEPTH_VERT, DEPTH_FRAG } from './gl/shaders.js';
+import {
+  MeshBuilder, perspectiveOffset, viewMatrix, multiply, orthographic, lookAt,
+} from './gl/mesh.js';
 import { buildRoom, buildMic } from './gl/room.js';
 import { woodTexture, stoneTexture, fabricTexture, plasterTexture, normalFrom } from './gl/textures.js';
 
@@ -168,6 +170,9 @@ const HANDLE_R = 15;
 const EYE_DROP = 0.10;
 const WALK = 3.2;
 const MAX_LIGHTS = 12;
+const SHADOW_SIZE = 1536;
+/** Where the key light comes from. Down and across, so shadows have a length. */
+const SUN = { x: 0.34, y: -1, z: 0.22 };
 
 export class RoomScene {
   constructor(canvas, hudCanvas) {
@@ -224,10 +229,90 @@ export class RoomScene {
       this.failed = `Shader problem: ${err.message}`;
       return;
     }
+    try {
+      const depth = buildProgram(gl, DEPTH_VERT, DEPTH_FRAG);
+      this.depthProg = depth.prog;
+      this.depthUni = depth.uniforms;
+    } catch (err) {
+      this.failed = `Shadow shader problem: ${err.message}`;
+      return;
+    }
     gl.enable(gl.DEPTH_TEST);
     gl.enable(gl.CULL_FACE);
     gl.cullFace(gl.BACK);
     this.aniso = gl.getExtension('EXT_texture_filter_anisotropic');
+    this.initShadow();
+  }
+
+  /** Depth target for the key light. Compared on sample, so the hardware filters. */
+  initShadow() {
+    const gl = this.gl;
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.DEPTH_COMPONENT24, SHADOW_SIZE, SHADOW_SIZE, 0,
+                  gl.DEPTH_COMPONENT, gl.UNSIGNED_INT, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_COMPARE_MODE, gl.COMPARE_REF_TO_TEXTURE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_COMPARE_FUNC, gl.LEQUAL);
+    const fb = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, tex, 0);
+    gl.drawBuffers([gl.NONE]);
+    gl.readBuffer(gl.NONE);
+    if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
+      this.failed = 'Could not set up a shadow buffer.';
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    this.shadowTex = tex;
+    this.shadowFb = fb;
+    this.shadowDirty = true;
+  }
+
+  /** Light's view-projection, sized to hold the whole room. */
+  lightMatrix() {
+    const { w, d, h } = this.state.dims;
+    const centre = { x: w / 2, y: h / 2, z: d / 2 };
+    const span = Math.hypot(w, d, h) * 0.5;
+    const dir = norm(SUN);
+    const eye = {
+      x: centre.x - dir.x * span * 1.6,
+      y: centre.y - dir.y * span * 1.6,
+      z: centre.z - dir.z * span * 1.6,
+    };
+    return multiply(orthographic(span * 1.05, span * 1.05, 0.05, span * 3.4),
+                    lookAt(eye, centre));
+  }
+
+  /**
+   * The room and its fittings do not move, so the depth pass only needs
+   * redrawing when the geometry changes -- which on a phone is most of the
+   * cost saved.
+   */
+  renderShadow() {
+    const gl = this.gl;
+    this.lightVP = this.lightMatrix();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.shadowFb);
+    gl.viewport(0, 0, SHADOW_SIZE, SHADOW_SIZE);
+    gl.clear(gl.DEPTH_BUFFER_BIT);
+    gl.useProgram(this.depthProg);
+    gl.uniformMatrix4fv(this.depthUni.uViewProj, false, this.lightVP);
+    // The shell itself must not cast, or its own ceiling shadows the entire
+    // room and nothing inside is lit at all. Only the things standing in the
+    // room cast: panels, clouds, beams, stands, the mic.
+    gl.cullFace(gl.FRONT);
+    const SHELL = new Set(['walls', 'floor', 'ceiling', 'glow', 'glass']);
+    for (const batch of [...(this.batches || []), ...(this.micBatches || [])]) {
+      if (SHELL.has(batch.name)) continue;
+      gl.bindVertexArray(batch.mesh.vao);
+      gl.drawElements(gl.TRIANGLES, batch.mesh.count, batch.mesh.type, 0);
+    }
+    gl.cullFace(gl.BACK);
+    gl.bindVertexArray(null);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    this.shadowDirty = false;
   }
 
   get mode() { return this.cam.mode; }
@@ -316,12 +401,14 @@ export class RoomScene {
     if (sig !== this.signature) {
       this.signature = sig;
       this.buildBatches();
+      this.shadowDirty = true;
     }
     const msig = [s.mic.x.toFixed(3), s.mic.z.toFixed(3), s.mic.height.toFixed(3),
                   s.mic.azimuth.toFixed(3)].join('|');
     if (msig !== this.micSignature) {
       this.micSignature = msig;
       this.buildMicBatch();
+      this.shadowDirty = true;
     }
   }
 
@@ -340,7 +427,7 @@ export class RoomScene {
       ? this.texture(`seat:${preset.seating.material}`,
           () => fabricTexture({ base: MATERIALS[preset.seating.material].colour, seed: 23 }))
       : null;
-    const metalTex = this.texture('metal', () => plasterTexture({ base: '#3a3f4a', seed: 9, strength: 0.25 }));
+    const metalTex = this.texture('metal', () => plasterTexture({ base: '#585f6d', seed: 9, strength: 0.25 }));
     const glassTex = this.texture('glasspane', () => plasterTexture({ base: '#20242c', seed: 17, strength: 0.05 }));
 
     const list = [];
@@ -354,6 +441,8 @@ export class RoomScene {
     add('ceiling', batches.ceiling, this.materialFor(preset.surfaces.ceiling));
     add('trim', batches.trim, { ...trimTex, uvScale: 1 / 1.1, tint: [1, 1, 1], rough: 0.55, normalStrength: 0.8 });
     add('panels', batches.panels, { ...fabric, uvScale: 1 / 0.55, tint: [1, 1, 1], rough: 0.95, normalStrength: 0.9 });
+    add('panelsAlt', batches.panelsAlt,
+      { ...fabric, uvScale: 1 / 0.5, tint: [0.66, 0.55, 0.5], rough: 0.95, normalStrength: 0.9 });
     add('metal', batches.metal, { ...metalTex, uvScale: 1 / 0.4, tint: [1, 1, 1], rough: 0.3, normalStrength: 0.3 });
     add('decor', batches.decor, { ...metalTex, uvScale: 1 / 0.5, tint: [0.85, 0.8, 0.76], rough: 0.45, normalStrength: 0.3 });
     if (seatTex) add('seats', batches.seats, { ...seatTex, uvScale: 1 / 0.6, tint: [1, 1, 1], rough: 0.95, normalStrength: 0.7 });
@@ -368,7 +457,7 @@ export class RoomScene {
     const gl = this.gl;
     if (this.micBatches) for (const b of this.micBatches) b.mesh.dispose();
     const { body, metal } = buildMic(this.state);
-    const metalTex = this.texture('metal', () => plasterTexture({ base: '#3a3f4a', seed: 9, strength: 0.25 }));
+    const metalTex = this.texture('metal', () => plasterTexture({ base: '#585f6d', seed: 9, strength: 0.25 }));
     const bodyTex = this.texture('micbody', () => plasterTexture({ base: '#9aa3b4', seed: 29, strength: 0.14 }));
     this.micBatches = [
       { mesh: metal.upload(gl), material: { ...metalTex, uvScale: 1 / 0.3, tint: [1, 1, 1], rough: 0.28, normalStrength: 0.3 } },
@@ -459,6 +548,7 @@ export class RoomScene {
   drawGL() {
     const gl = this.gl;
     const { w, d, h } = this.state.dims;
+    if (this.shadowDirty) this.renderShadow();
     gl.viewport(0, 0, this.canvas.width, this.canvas.height);
     const dark = this.state.presetId === 'cathedral' ? [0.026, 0.028, 0.038] : [0.02, 0.022, 0.03];
     gl.clearColor(dark[0], dark[1], dark[2], 1);
@@ -500,10 +590,16 @@ export class RoomScene {
     gl.uniform1f(u.uFogDensity, 0.005 + clamp((big - 18) / 2600, 0, 0.019));
     gl.uniform1f(u.uExposure, 1.05);
 
-    gl.activeTexture(gl.TEXTURE0);
+    const sun = norm(SUN);
+    gl.uniform3f(u.uSunDir, sun.x, sun.y, sun.z);
+    gl.uniform3f(u.uSunColor, 0.42, 0.40, 0.37);
+    gl.uniformMatrix4fv(u.uLightViewProj, false, this.lightVP || this.lightMatrix());
+
     gl.uniform1i(u.uAlbedo, 0);
-    gl.activeTexture(gl.TEXTURE1);
     gl.uniform1i(u.uNormalMap, 1);
+    gl.uniform1i(u.uShadowMap, 2);
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, this.shadowTex);
 
     const drawList = [...(this.batches || []), ...(this.micBatches || [])];
     for (const batch of this.only ? drawList.filter((b) => b.name === this.only) : drawList) {

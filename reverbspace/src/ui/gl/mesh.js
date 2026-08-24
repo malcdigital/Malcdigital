@@ -119,6 +119,22 @@ export class MeshBuilder {
     return this;
   }
 
+  /**
+   * A ring lying in a plane, built from tube segments. Coiled cable on a wall
+   * hook -- the detail that says a room is worked in rather than rendered.
+   */
+  ring(centre, radius, thickness, axis = 'z', segments = 14) {
+    const pt = (t) => {
+      const a = (t / segments) * Math.PI * 2;
+      const c = Math.cos(a) * radius, s2 = Math.sin(a) * radius;
+      if (axis === 'z') return [centre[0] + c, centre[1] + s2, centre[2]];
+      if (axis === 'x') return [centre[0], centre[1] + s2, centre[2] + c];
+      return [centre[0] + c, centre[1], centre[2] + s2];
+    };
+    for (let i = 0; i < segments; i++) this.tube(pt(i), pt(i + 1), thickness, 5, false);
+    return this;
+  }
+
   /** Upload to GPU buffers and return something drawable. */
   upload(gl) {
     const vao = gl.createVertexArray();
@@ -202,4 +218,27 @@ export function multiply(a, b) {
     }
   }
   return out;
+}
+
+/** Orthographic projection, for a directional light's shadow pass. */
+export function orthographic(halfW, halfH, near, far) {
+  const m = new Float32Array(16);
+  m[0] = 1 / halfW;
+  m[5] = 1 / halfH;
+  m[10] = -2 / (far - near);
+  m[14] = -(far + near) / (far - near);
+  m[15] = 1;
+  return m;
+}
+
+/** View matrix looking from `eye` at `target`. */
+export function lookAt(eye, target, up = { x: 0, y: 1, z: 0 }) {
+  const f = normalize([target.x - eye.x, target.y - eye.y, target.z - eye.z]);
+  let upv = [up.x, up.y, up.z];
+  if (Math.abs(dot(f, upv)) > 0.999) upv = [1, 0, 0];
+  const r = normalize(cross(f, upv));
+  const u = cross(r, f);
+  return viewMatrix(eye, { x: r[0], y: r[1], z: r[2] },
+                         { x: u[0], y: u[1], z: u[2] },
+                         { x: f[0], y: f[1], z: f[2] });
 }

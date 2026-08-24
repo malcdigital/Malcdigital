@@ -56,6 +56,11 @@ uniform vec3 uLightPos[MAX_LIGHTS];
 uniform vec3 uLightColor[MAX_LIGHTS];
 uniform float uLightRange[MAX_LIGHTS];
 
+uniform mat4 uLightViewProj;
+uniform highp sampler2DShadow uShadowMap;
+uniform vec3 uSunDir;
+uniform vec3 uSunColor;
+
 uniform vec3 uAmbientSky;
 uniform vec3 uAmbientGround;
 uniform vec3 uFogColor;
@@ -76,6 +81,28 @@ float roomAo(vec3 p, vec3 n) {
   vec3 w = 1.0 - abs(n);
   vec3 f = mix(vec3(1.0), t, w);
   return clamp(f.x * f.y * f.z, 0.0, 1.0) * 0.72 + 0.28;
+}
+
+/*
+ * How much of the key light reaches this point. Percentage-closer filtered over
+ * a 3x3 kernel, with the bias slackened on surfaces facing away from the light,
+ * where the depth gradient across a texel is steepest and acne shows first.
+ */
+float sunVisibility(vec3 p, float ndl) {
+  vec4 lp = uLightViewProj * vec4(p, 1.0);
+  vec3 proj = (lp.xyz / lp.w) * 0.5 + 0.5;
+  if (proj.z > 1.0 || any(lessThan(proj.xy, vec2(0.0))) || any(greaterThan(proj.xy, vec2(1.0)))) {
+    return 1.0;
+  }
+  float bias = mix(0.0035, 0.0006, ndl);
+  vec2 texel = 1.0 / vec2(textureSize(uShadowMap, 0));
+  float sum = 0.0;
+  for (int y = -1; y <= 1; y++) {
+    for (int x = -1; x <= 1; x++) {
+      sum += texture(uShadowMap, vec3(proj.xy + vec2(float(x), float(y)) * texel, proj.z - bias));
+    }
+  }
+  return sum / 9.0;
 }
 
 vec3 tonemap(vec3 x) {
@@ -99,9 +126,25 @@ void main() {
   vec3 V = normalize(uEye - vPos);
   float ao = roomAo(vPos, normalize(vNormal));
 
+  // Key light from overhead, and the only one that casts. The lamps below are
+  // many and small; shadowing each would cost a map apiece for little gain.
+  vec3 sunL = -normalize(uSunDir);
+  float sunNdl = max(dot(N, sunL), 0.0);
+  float sun = sunNdl > 0.0 ? sunVisibility(vPos, sunNdl) : 1.0;
+
   // Hemisphere ambient: a room is lit from above even where no lamp reaches.
+  // Damped in shadow, so a cast shadow reads as a shadow and not a grey patch.
   float up = N.y * 0.5 + 0.5;
-  vec3 lit = albedo * mix(uAmbientGround, uAmbientSky, up) * ao;
+  vec3 lit = albedo * mix(uAmbientGround, uAmbientSky, up) * ao * mix(0.72, 1.0, sun);
+
+  float gloss = 1.0 - clamp(uRough, 0.0, 1.0);
+
+  // Environment reflection. A varnished floor picks up the room at a grazing
+  // angle, which is most of what separates a sealed board from flat paint.
+  vec3 R = reflect(-V, N);
+  vec3 env = mix(uAmbientGround, uAmbientSky, R.y * 0.5 + 0.5);
+  float fresnel = pow(1.0 - max(dot(N, V), 0.0), 5.0);
+  lit += env * (0.05 + 0.85 * fresnel) * gloss * ao * mix(0.6, 1.0, sun);
 
   float shine = mix(64.0, 6.0, clamp(uRough, 0.0, 1.0));
   // Rough surfaces get almost no highlight. Without this the term sums across
@@ -126,6 +169,12 @@ void main() {
     lit += uLightColor[i] * atten * (albedo * ndl + spec) * mix(0.55, 1.0, ao);
   }
 
+  {
+    vec3 H = normalize(sunL + V);
+    float spec = pow(max(dot(N, H), 0.0), shine) * specK * sunNdl;
+    lit += uSunColor * sun * (albedo * sunNdl + spec);
+  }
+
   lit += uEmissive;
 
   float depth = length(uEye - vPos);
@@ -134,6 +183,21 @@ void main() {
 
   fragColor = vec4(pow(tonemap(lit * uExposure), vec3(1.0 / 2.2)), 1.0);
 }
+`;
+
+/** Depth-only pass: position in, nothing out but the depth buffer. */
+export const DEPTH_VERT = `#version 300 es
+precision highp float;
+layout(location = 0) in vec3 aPos;
+uniform mat4 uViewProj;
+void main() {
+  gl_Position = uViewProj * vec4(aPos, 1.0);
+}
+`;
+
+export const DEPTH_FRAG = `#version 300 es
+precision highp float;
+void main() {}
 `;
 
 /** Compile, link, and cache every uniform location up front. */
