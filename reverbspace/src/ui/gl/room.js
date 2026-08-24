@@ -48,20 +48,49 @@ export function buildRoom(state) {
     glow: new MeshBuilder(),
     glass: new MeshBuilder(),
     seats: new MeshBuilder(),
+    screens: new MeshBuilder(),
+    booth: new MeshBuilder(),
     decor: new MeshBuilder(),
   };
   const lights = [];
 
-  // ---- the six surfaces the model actually uses --------------------------
-  // Wound so the normals point into the room: a floor faces up, a ceiling
-  // faces down. Backwards, the floor is lit as if from below and the ceiling
-  // is culled away entirely.
+  // ---- the surfaces the model actually uses ------------------------------
+  // A gable rises `rise` above the mean height and the eaves drop as far
+  // below, so the volume matches the flat ceiling the decay is computed from.
+  const rise = preset.pitch ? preset.pitch * (w / preset.dims.w) : 0;
+  const eaves = h - rise;
+  const ridge = h + rise;
+  const win = windowOpening(preset, w, h);
+
   out.floor.quad([0, 0, 0], [0, 0, d], [w, 0, d], [w, 0, 0]);
-  out.ceiling.quad([0, h, 0], [w, h, 0], [w, h, d], [0, h, d]);
-  out.walls.quad([0, 0, 0], [w, 0, 0], [w, h, 0], [0, h, 0]);
-  out.walls.quad([w, 0, d], [0, 0, d], [0, h, d], [w, h, d]);
-  out.walls.quad([0, 0, d], [0, 0, 0], [0, h, 0], [0, h, d]);
-  out.walls.quad([w, 0, 0], [w, 0, d], [w, h, d], [w, h, 0]);
+
+  if (rise > 0.01) {
+    // Two slopes meeting over the middle of the room, normals facing down.
+    out.ceiling.quad([0, eaves, 0], [w / 2, ridge, 0], [w / 2, ridge, d], [0, eaves, d]);
+    out.ceiling.quad([w / 2, ridge, 0], [w, eaves, 0], [w, eaves, d], [w / 2, ridge, d]);
+    out.trim.box([w / 2 - 0.09, ridge - 0.16, 0], [w / 2 + 0.09, ridge, d]);
+  } else {
+    out.ceiling.quad([0, h, 0], [w, h, 0], [w, h, d], [0, h, d]);
+  }
+
+  // Front wall, with the control-room opening cut out of it.
+  const front = (x0, y0, x1, y1) => out.walls.quad([x0, y0, 0], [x1, y0, 0], [x1, y1, 0], [x0, y1, 0]);
+  if (win) {
+    front(0, 0, w, win.y0);
+    front(0, win.y1, w, eaves);
+    front(0, win.y0, win.x0, win.y1);
+    front(win.x1, win.y0, w, win.y1);
+  } else {
+    front(0, 0, w, eaves);
+  }
+  out.walls.quad([w, 0, d], [0, 0, d], [0, eaves, d], [w, eaves, d]);
+  out.walls.quad([0, 0, d], [0, 0, 0], [0, eaves, 0], [0, eaves, d]);
+  out.walls.quad([w, 0, 0], [w, 0, d], [w, eaves, d], [w, eaves, 0]);
+
+  if (rise > 0.01) {
+    out.walls.tri([0, eaves, 0], [w, eaves, 0], [w / 2, ridge, 0]);
+    out.walls.tri([w, eaves, d], [0, eaves, d], [w / 2, ridge, d]);
+  }
 
   // ---- trim: what gives a room its scale ---------------------------------
   const skirt = clamp(h * 0.045, 0.08, 0.26);
@@ -71,20 +100,28 @@ export function buildRoom(state) {
   out.trim.box([0, 0, t], [t, skirt, d - t]);
   out.trim.box([w - t, 0, t], [w, skirt, d - t]);
 
-  // Cornice where wall meets ceiling.
+  // Cornice along the eaves.
   const cor = clamp(h * 0.028, 0.05, 0.2);
-  out.trim.box([0, h - cor, 0], [w, h, cor]);
-  out.trim.box([0, h - cor, d - cor], [w, h, d]);
-  out.trim.box([0, h - cor, cor], [cor, h, d - cor]);
-  out.trim.box([w - cor, h - cor, cor], [w, h, d - cor]);
+  out.trim.box([0, eaves - cor, 0], [w, eaves, cor]);
+  out.trim.box([0, eaves - cor, d - cor], [w, eaves, d]);
+  out.trim.box([0, eaves - cor, cor], [cor, eaves, d - cor]);
+  out.trim.box([w - cor, eaves - cor, cor], [w, eaves, d - cor]);
 
-  // Exposed ceiling beams, running the short way like a real timber ceiling.
+  // Rafters, following the slope where there is one.
   if (preset.id === 'studio' || preset.id === 'hall' || preset.id === 'theater') {
-    const spacing = clamp(Math.max(1.1, w / 7), 1.1, 3.2);
-    const bw = clamp(spacing * 0.16, 0.08, 0.3);
-    const bh = clamp(h * 0.05, 0.09, 0.35);
-    for (let x = spacing * 0.5; x < w - 0.2; x += spacing) {
-      out.trim.box([x - bw / 2, h - bh, 0], [x + bw / 2, h, d]);
+    const spacing = clamp(Math.max(1.1, d / 6), 0.9, 3.2);
+    const bw = clamp(spacing * 0.14, 0.07, 0.26);
+    const bh = clamp(h * 0.045, 0.08, 0.3);
+    for (let z = spacing * 0.5; z < d - 0.15; z += spacing) {
+      if (rise > 0.01) {
+        // Along the slope, eaves to ridge. A box turned about the vertical
+        // cannot tilt, so these are built as prisms between the two ends.
+        const drop = bh * 0.55;
+        out.trim.tube([0.02, eaves - drop, z], [w / 2, ridge - drop, z], bw * 0.8, 4);
+        out.trim.tube([w / 2, ridge - drop, z], [w - 0.02, eaves - drop, z], bw * 0.8, 4);
+      } else {
+        out.trim.box([0, h - bh, z - bw / 2], [w, h, z + bw / 2]);
+      }
     }
   }
 
@@ -101,7 +138,7 @@ export function buildRoom(state) {
     const thick = 0.07;
     for (const wall of walls) {
       const cols = Math.max(2, Math.round(wall.len / 1.9));
-      const rows = Math.max(2, Math.round(h / 1.7));
+      const rows = Math.max(2, Math.round(eaves / 1.7));
       const order = shuffled(cols * rows, wall.id + 3);
       const want = Math.round(cols * rows * clamp(cov, 0, 0.92));
       for (let k = 0; k < want; k++) {
@@ -109,7 +146,7 @@ export function buildRoom(state) {
         const c = idx % cols, r = (idx / cols) | 0;
         const pad = 0.14;
         const u0 = (c / cols) * wall.len + pad, u1 = ((c + 1) / cols) * wall.len - pad;
-        const v0 = (r / rows) * h + pad, v1 = ((r + 1) / rows) * h - pad;
+        const v0 = (r / rows) * eaves + pad, v1 = ((r + 1) / rows) * eaves - pad;
         if (u1 <= u0 || v1 <= v0) continue;
         const a = wall.at(u0, v0), b = wall.at(u1, v1);
         const lo = [Math.min(a[0], b[0]), v0, Math.min(a[2], b[2])];
@@ -130,26 +167,29 @@ export function buildRoom(state) {
     for (let i = 0; i < count; i++) {
       const cx = lerp(cw, w - cw, hash(i, 101));
       const cz = lerp(cd, d - cd, hash(i, 211));
+      // Hung below whatever the ceiling is doing overhead at that point.
+      const local = rise > 0.01 ? eaves + (1 - Math.abs(cx - w / 2) / (w / 2)) * rise * 2 : h;
       const drop = lerp(0.2, 0.8, hash(i, 307)) * clamp(h / 3.2, 0.6, 2.6);
-      const y = h - drop - 0.05;
+      const y = local - drop - 0.05;
       if (y < state.source.height + 0.35) continue;
       const rot = (hash(i, 401) - 0.5) * 0.9;
       out.panels.boxRotY([cx, y, cz], [cw, 0.1, cd], rot);
-      // A frame round the edge, so a cloud reads as a built absorber rather
-      // than a floating slab.
+      // A timber frame round the edge, so a cloud reads as a built absorber
+      // rather than a floating slab. Wood, not steel: a cold blue frame reads
+      // wrong against cedar.
       const fr = 0.05;
-      out.metal.boxRotY([cx, y, cz], [cw + fr, 0.045, cd + fr], rot);
+      out.trim.boxRotY([cx, y, cz], [cw + fr, 0.045, cd + fr], rot);
       const ca = Math.cos(rot), sa = Math.sin(rot);
       for (const [ox, oz] of [[-cw / 2 + 0.12, -cd / 2 + 0.1], [cw / 2 - 0.12, cd / 2 - 0.1]]) {
         const px = cx + ox * ca - oz * sa;
         const pz = cz + ox * sa + oz * ca;
-        out.metal.tube([px, y + 0.05, pz], [px, h, pz], 0.008, 5, false);
+        out.metal.tube([px, y + 0.05, pz], [px, local, pz], 0.008, 5, false);
       }
     }
   }
 
   // ---- fittings ----------------------------------------------------------
-  const lampY = clamp(h * 0.58, 1.5, 5.0);
+  const lampY = clamp(eaves * 0.58, 1.4, 5.0);
   const along = [
     { len: w, at: (u) => [u, lampY, 0.08], push: [0, 0, 1] },
     { len: w, at: (u) => [u, lampY, d - 0.08], push: [0, 0, -1] },
@@ -160,19 +200,32 @@ export function buildRoom(state) {
     const n = clamp(Math.round(wall.len / 4.2), 1, 8);
     for (let i = 0; i < n; i++) {
       const p = wall.at(((i + 0.5) / n) * wall.len);
-      const s = 0.17;
-      const lo = [p[0] - s, p[1] - s, p[2] - s];
-      const hi = [p[0] + s, p[1] + s, p[2] + s];
-      // Flatten against its wall.
-      if (wall.push[0] !== 0) { lo[0] = p[0] - 0.05; hi[0] = p[0] + 0.05; }
-      else { lo[2] = p[2] - 0.05; hi[2] = p[2] + 0.05; }
+      // A shade: wide, shallow, standing off the wall, open top and bottom.
+      const halfW = 0.22, halfH = 0.15, depth = 0.11;
+      const lo = [p[0] - halfW, p[1] - halfH, p[2] - halfW];
+      const hi = [p[0] + halfW, p[1] + halfH, p[2] + halfW];
+      if (wall.push[0] !== 0) {
+        lo[0] = p[0] - (wall.push[0] > 0 ? 0.01 : depth);
+        hi[0] = p[0] + (wall.push[0] > 0 ? depth : 0.01);
+      } else {
+        lo[2] = p[2] - (wall.push[2] > 0 ? 0.01 : depth);
+        hi[2] = p[2] + (wall.push[2] > 0 ? depth : 0.01);
+      }
       out.glow.box(lo, hi);
-      lights.push({
-        pos: [p[0] + wall.push[0] * 0.3, p[1], p[2] + wall.push[2] * 0.3],
-        colour: [1.0, 0.86, 0.68],
-        range: clamp(Math.max(w, d, h) * 0.55, 4, 26),
-        power: 0.95,
-      });
+      out.trim.box(
+        [lo[0] - 0.012, lo[1] - 0.03, lo[2] - 0.012],
+        [hi[0] + 0.012, lo[1], hi[2] + 0.012]);
+      // Two sources, just clear of the shade top and bottom and close in to
+      // the wall, which is what gives a sconce its pair of pools.
+      const range = clamp(Math.max(w, d, h) * 0.4, 3, 18);
+      for (const dy of [halfH + 0.06, -halfH - 0.06]) {
+        lights.push({
+          pos: [p[0] + wall.push[0] * 0.16, p[1] + dy, p[2] + wall.push[2] * 0.16],
+          colour: [1.0, 0.84, 0.63],
+          range,
+          power: 0.62,
+        });
+      }
     }
   }
 
@@ -190,20 +243,17 @@ export function buildRoom(state) {
     }
   }
 
-  // A window into the control room, and a door.
-  if (preset.id === 'studio' || preset.id === 'theater') {
-    const cw = clamp(w * 0.24, 1.2, 2.8);
-    const cy = clamp(h * 0.44, 1.05, 1.7);
-    const x0 = w / 2 - cw / 2, x1 = w / 2 + cw / 2;
-    out.glass.box([x0, cy - 0.45, 0.01], [x1, cy + 0.45, 0.06]);
-    out.trim.box([x0 - 0.09, cy - 0.55, 0], [x1 + 0.09, cy - 0.45, 0.1]);
-    out.trim.box([x0 - 0.09, cy + 0.45, 0], [x1 + 0.09, cy + 0.55, 0.1]);
-    out.trim.box([x0 - 0.09, cy - 0.55, 0], [x0, cy + 0.55, 0.1]);
-    out.trim.box([x1, cy - 0.55, 0], [x1 + 0.09, cy + 0.55, 0.1]);
-    lights.push({
-      pos: [w / 2, cy, 0.5], colour: [1.0, 0.85, 0.62],
-      range: clamp(Math.max(w, d) * 0.6, 4, 18), power: 0.9,
-    });
+  // The control room on the other side of the glass.
+  if (win) {
+    buildControlRoom(out, lights, win, w);
+    // Reveal round the opening, and the pane itself.
+    const j = 0.1;
+    out.trim.box([win.x0 - j, win.y0 - j, -0.02], [win.x1 + j, win.y0, j]);
+    out.trim.box([win.x0 - j, win.y1, -0.02], [win.x1 + j, win.y1 + j, j]);
+    out.trim.box([win.x0 - j, win.y0, -0.02], [win.x0, win.y1, j]);
+    out.trim.box([win.x1, win.y0, -0.02], [win.x1 + j, win.y1, j]);
+    out.glass.quad([win.x0, win.y0, 0.012], [win.x1, win.y0, 0.012],
+                   [win.x1, win.y1, 0.012], [win.x0, win.y1, 0.012]);
   }
 
   const doorZ = clamp(d * 0.24, 0.6, d - 1.2);
@@ -260,6 +310,56 @@ export function buildRoom(state) {
   }
 
   return { batches: out, lights };
+}
+
+/** Where the control-room window sits, or null for a room that has none. */
+function windowOpening(preset, w, h) {
+  if (preset.id !== 'studio' && preset.id !== 'theater') return null;
+  const cw = clamp(w * 0.26, 1.3, 2.9);
+  const cy = clamp(h * 0.46, 1.1, 1.75);
+  return { x0: w / 2 - cw / 2, x1: w / 2 + cw / 2, y0: cy - 0.48, y1: cy + 0.48 };
+}
+
+/**
+ * A room behind the glass, built inside-out so you see its inner faces through
+ * the opening: back wall, desk, a pair of monitors and a lamp of its own.
+ * Entirely decoration -- the model's walls stop at the studio side.
+ */
+function buildControlRoom(out, lights, win, w) {
+  const cx = (win.x0 + win.x1) / 2;
+  const halfW = Math.max(2.2, (win.x1 - win.x0) * 0.95);
+  const back = -3.1;
+  const top = win.y1 + 0.75;
+  const x0 = cx - halfW, x1 = cx + halfW;
+
+  // Faces wound to be seen from the studio side.
+  out.booth.quad([x0, 0, back], [x1, 0, back], [x1, top, back], [x0, top, back]);
+  out.booth.quad([x0, 0, back], [x0, 0, -0.05], [x0, top, -0.05], [x0, top, back]);
+  out.booth.quad([x1, 0, -0.05], [x1, 0, back], [x1, top, back], [x1, top, -0.05]);
+  out.booth.quad([x0, 0, back], [x0, 0, -0.05], [x1, 0, -0.05], [x1, 0, back]);
+  out.booth.quad([x0, top, -0.05], [x0, top, back], [x1, top, back], [x1, top, -0.05]);
+
+  // Desk under the window, with a pair of screens and nearfields on it.
+  const deskY = win.y0 - 0.18;
+  const deskZ0 = -1.5, deskZ1 = -0.55;
+  out.decor.box([cx - 1.5, deskY, deskZ0], [cx + 1.5, deskY + 0.06, deskZ1]);
+  for (const sx of [cx - 1.42, cx + 1.36]) {
+    out.decor.box([sx - 0.05, 0, deskZ0 + 0.1], [sx + 0.05, deskY, deskZ0 + 0.2]);
+    out.decor.box([sx - 0.05, 0, deskZ1 - 0.2], [sx + 0.05, deskY, deskZ1 - 0.1]);
+  }
+  for (const mx of [cx - 0.62, cx + 0.62]) {
+    out.decor.box([mx - 0.36, deskY + 0.06, deskZ0 + 0.06], [mx + 0.36, deskY + 0.5, deskZ0 + 0.12]);
+    out.screens.box([mx - 0.33, deskY + 0.1, deskZ0 + 0.04], [mx + 0.33, deskY + 0.47, deskZ0 + 0.062]);
+  }
+  for (const sx of [cx - 1.25, cx + 1.25]) {
+    out.decor.box([sx - 0.16, deskY + 0.06, deskZ0 + 0.05], [sx + 0.16, deskY + 0.48, deskZ0 + 0.3]);
+  }
+
+  // Its own light, so the booth reads as lit rather than as a painted panel.
+  lights.push({ pos: [cx - 1.1, top - 0.3, back + 1.2], colour: [1.0, 0.9, 0.76], range: 6.5, power: 1.5 });
+  lights.push({ pos: [cx + 1.2, top - 0.3, back + 1.2], colour: [1.0, 0.9, 0.76], range: 6.5, power: 1.1 });
+  lights.push({ pos: [cx, deskY + 0.55, deskZ0 + 0.5], colour: [0.62, 0.76, 1.0], range: 2.6, power: 0.8 });
+  void w;
 }
 
 /** The mic and its stand, rebuilt whenever it moves. */

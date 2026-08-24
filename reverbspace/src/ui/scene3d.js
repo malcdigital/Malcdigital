@@ -446,8 +446,14 @@ export class RoomScene {
     add('metal', batches.metal, { ...metalTex, uvScale: 1 / 0.4, tint: [1, 1, 1], rough: 0.3, normalStrength: 0.3 });
     add('decor', batches.decor, { ...metalTex, uvScale: 1 / 0.5, tint: [0.85, 0.8, 0.76], rough: 0.45, normalStrength: 0.3 });
     if (seatTex) add('seats', batches.seats, { ...seatTex, uvScale: 1 / 0.6, tint: [1, 1, 1], rough: 0.95, normalStrength: 0.7 });
-    add('glass', batches.glass, { ...glassTex, uvScale: 1 / 2, tint: [1, 1, 1], rough: 0.1, normalStrength: 0,
-                         emissive: [0.34, 0.27, 0.18] });
+    // Barely there: a pane is mostly the room reflected in it, which the
+    // environment term already supplies.
+    add('glass', batches.glass, { ...glassTex, uvScale: 1 / 2, tint: [1, 1, 1], rough: 0.03,
+                                  normalStrength: 0, alpha: 0.22 });
+    add('screens', batches.screens, { ...glassTex, uvScale: 1 / 0.4, tint: [1, 1, 1], rough: 0.1,
+                                      normalStrength: 0, emissive: [0.5, 0.66, 1.05] });
+    add('booth', batches.booth, { ...trimTex, uvScale: 1 / 1.4, tint: [0.62, 0.6, 0.6], rough: 0.9,
+                                  normalStrength: 0.4 });
     add('glow', batches.glow, { ...metalTex, uvScale: 1 / 0.4, tint: [1, 1, 1], rough: 0.2, normalStrength: 0,
                         emissive: [1.5, 1.15, 0.72] });
     this.batches = list;
@@ -601,8 +607,19 @@ export class RoomScene {
     gl.activeTexture(gl.TEXTURE2);
     gl.bindTexture(gl.TEXTURE_2D, this.shadowTex);
 
-    const drawList = [...(this.batches || []), ...(this.micBatches || [])];
-    for (const batch of this.only ? drawList.filter((b) => b.name === this.only) : drawList) {
+    const all = [...(this.batches || []), ...(this.micBatches || [])];
+    const drawList = this.only ? all.filter((b) => b.name === this.only) : all;
+    // Glass goes last and blended, so the control room shows through it.
+    const opaque = drawList.filter((b) => (b.material.alpha ?? 1) >= 1);
+    const clear = drawList.filter((b) => (b.material.alpha ?? 1) < 1);
+    for (const batch of opaque.concat(clear)) {
+      const alpha = batch.material.alpha ?? 1;
+      if (alpha < 1) {
+        gl.enable(gl.BLEND);
+        gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+        gl.depthMask(false);
+      }
+      gl.uniform1f(u.uAlpha, alpha);
       const m = batch.material;
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, m.albedo);
@@ -615,6 +632,10 @@ export class RoomScene {
       gl.uniform3fv(u.uEmissive, m.emissive || [0, 0, 0]);
       gl.bindVertexArray(batch.mesh.vao);
       gl.drawElements(gl.TRIANGLES, batch.mesh.count, batch.mesh.type, 0);
+      if (alpha < 1) {
+        gl.depthMask(true);
+        gl.disable(gl.BLEND);
+      }
     }
     gl.bindVertexArray(null);
   }

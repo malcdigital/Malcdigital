@@ -11,6 +11,7 @@
  * @property {{floor:string,ceiling:string,walls:string}} surfaces material ids
  * @property {{coverage:number,material:string}|null} seating fraction of floor
  * @property {{coverage:number,type:string}} treatment default wall treatment
+ * @property {number} [pitch]  gable rise above the mean ceiling height, metres
  * @property {{x:number,z:number}} sourceAt        default position, 0..1 of room
  * @property {number} micDistance                  default metres from source
  * @property {string} palette                      renderer accent
@@ -24,6 +25,10 @@ export const PRESETS = [
     blurb: 'Small, dead, controlled. The tail is over before you notice it.',
     dims: { w: 7.5, d: 5.5, h: 3.2 },
     sizeRange: [0.45, 2.6],
+    // Gable running the length of the room. Rises this far above the mean at
+    // the ridge and drops as far below it at the eaves, so the volume is
+    // exactly what a flat ceiling at `h` would give.
+    pitch: 0.46,
     surfaces: { floor: 'woodFloor', ceiling: 'woodPanel', walls: 'woodPanel' },
     seating: null,
     treatment: { coverage: 0.35, type: 'rockwool' },

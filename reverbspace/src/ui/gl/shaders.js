@@ -46,6 +46,7 @@ uniform vec3 uTint;
 uniform float uRough;
 uniform float uNormalStrength;
 uniform vec3 uEmissive;
+uniform float uAlpha;
 
 uniform vec3 uEye;
 uniform vec3 uRoom;
@@ -181,7 +182,7 @@ void main() {
   float fog = 1.0 - exp(-depth * uFogDensity);
   lit = mix(lit, uFogColor, clamp(fog, 0.0, 0.92));
 
-  fragColor = vec4(pow(tonemap(lit * uExposure), vec3(1.0 / 2.2)), 1.0);
+  fragColor = vec4(pow(tonemap(lit * uExposure), vec3(1.0 / 2.2)), uAlpha);
 }
 `;
 

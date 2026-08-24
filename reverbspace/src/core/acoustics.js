@@ -116,6 +116,20 @@ export function clampOccupants(state) {
  * Effective per-band absorption of each surface once seating and wall
  * treatment are folded in, plus the areas they cover.
  */
+/**
+ * How much larger a pitched ceiling is than the flat one it replaces.
+ *
+ * The gable is symmetric about the mean height, so the room's volume is
+ * unchanged and only the ceiling's area grows -- by the ratio of the slope
+ * length to the horizontal run it covers.
+ */
+export function pitchFactor(state) {
+  const p = PRESETS_BY_ID[state.presetId];
+  if (!p.pitch) return 1;
+  const rise = p.pitch * (state.dims.w / p.dims.w);
+  return Math.sqrt(1 + Math.pow((2 * rise) / state.dims.w, 2));
+}
+
 export function surfaces(state) {
   const p = PRESETS_BY_ID[state.presetId];
   const { w, d, h } = state.dims;
@@ -138,9 +152,9 @@ export function surfaces(state) {
   const ceilAlpha = blendAlpha(MATERIALS[p.surfaces.ceiling].alpha, treat.alpha, cov * 0.6);
 
   return {
-    floor:   { area: w * d,            alpha: floorAlpha, scatter: floorScatter },
-    ceiling: { area: w * d,            alpha: ceilAlpha,  scatter: scatter * 0.6 },
-    walls:   { area: 2 * (w + d) * h,  alpha: wallAlpha,  scatter: scatter * 0.9 },
+    floor:   { area: w * d,                      alpha: floorAlpha, scatter: floorScatter },
+    ceiling: { area: w * d * pitchFactor(state), alpha: ceilAlpha,  scatter: scatter * 0.6 },
+    walls:   { area: 2 * (w + d) * h,            alpha: wallAlpha,  scatter: scatter * 0.9 },
   };
 }
 
@@ -183,6 +197,13 @@ export function decayProfile(state) {
     schroeder: 2000 * Math.sqrt(midRt / volume),
   };
 }
+
+/*
+ * A note on pitched ceilings: the image sources below mirror against a flat
+ * ceiling at the mean height. The tail, which is what a pitch mostly changes,
+ * comes from the volume and surface area above and is exact; the early
+ * reflections off a gable are approximated by that equivalent flat plane.
+ */
 
 /** Mirror a coordinate into image-source space for index n over length L. */
 function mirror(n, s, L) {
