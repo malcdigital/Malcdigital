@@ -159,9 +159,17 @@ export function buildRoom(state) {
 
       lights.push({
         pos: [px, hangY - 0.06, pz],
-        colour: [1.0, 0.9, 0.76],
+        colour: [1.0, 0.88, 0.72],
         range: clamp(Math.max(w, d) * 0.7, 5, 34),
-        power: 1.25,
+        power: 1.3,
+      });
+      // A little spill upward. Every pendant marks the ceiling above it, and
+      // without that the shade floats against a flat surface.
+      lights.push({
+        pos: [px, shadeTop + 0.18, pz],
+        colour: [1.0, 0.88, 0.74],
+        range: clamp(Math.max(w, d) * 0.3, 1.6, 6),
+        power: 0.5,
       });
     }
   }
@@ -361,7 +369,16 @@ export function buildRoom(state) {
 
   const doorZ = clamp(d * 0.24, 0.6, d - 1.2);
   const doorH = Math.min(2.05, h - 0.1);
-  out.door.box([0.02, 0, doorZ - 0.45], [0.08, doorH, doorZ + 0.45]);
+  // Left ajar, with daylight from the corridor coming past it. A room lit
+  // entirely by tungsten has nothing for the warmth to read against.
+  out.door.box([0.02, 0, doorZ - 0.45], [0.08, doorH, doorZ + 0.28]);
+  out.glow.box([0.005, 0.004, doorZ + 0.3], [0.02, doorH - 0.02, doorZ + 0.45]);
+  lights.push({
+    pos: [0.42, doorH * 0.62, doorZ + 0.42],
+    colour: [0.56, 0.68, 1.0],
+    range: clamp(Math.max(w, d) * 0.42, 2.4, 9),
+    power: 0.95,
+  });
   out.metal.tube([0.09, doorH * 0.5, doorZ + 0.3], [0.16, doorH * 0.5, doorZ + 0.3], 0.018, 6);
   out.trim.box([0, 0, doorZ - 0.56], [0.1, doorH + 0.1, doorZ - 0.45]);
   out.trim.box([0, 0, doorZ + 0.45], [0.1, doorH + 0.1, doorZ + 0.56]);

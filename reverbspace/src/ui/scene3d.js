@@ -449,10 +449,11 @@ export class RoomScene {
       { ...fabric, uvScale: 1 / 0.3, tint: [1, 1, 1], rough: 0.99, normalStrength: 0.5 });
     add('diffuser', batches.diffuser,
       { ...trimTex, uvScale: 1 / 0.5, tint: [1.15, 1.06, 0.92], rough: 0.5, normalStrength: 0.7 });
-    // Painted enamel: darker outside than the light it throws, which is what
-    // stops a lit shade reading as a glowing blob.
+    // Brass. Painted dark, a shade is lit only from inside and reads as a
+    // silhouette from across the room; a bright metal catches the other lamps.
+    const brassTex = this.texture('brass', () => plasterTexture({ base: '#a8823f', seed: 33, strength: 0.16 }));
     add('shade', batches.shade,
-      { ...metalTex, uvScale: 1 / 0.35, tint: [0.62, 0.6, 0.6], rough: 0.35, normalStrength: 0.25 });
+      { ...brassTex, uvScale: 1 / 0.3, tint: [1.12, 1.02, 0.84], rough: 0.22, normalStrength: 0.2 });
     // Lit fabric: glowing, but not a light source in its own right.
     add('shadeSoft', batches.shadeSoft,
       { ...fabric, uvScale: 1 / 0.3, tint: [1.25, 1.15, 0.95], rough: 0.98, normalStrength: 0.4,
@@ -610,8 +611,10 @@ export class RoomScene {
     const big = Math.max(w, d, h);
     // Neutral ambient: leaning it warm as well as the lamps pushed every
     // surface toward the same orange and the panels lost their own colour.
-    gl.uniform3f(u.uAmbientSky, 0.185, 0.185, 0.19);
-    gl.uniform3f(u.uAmbientGround, 0.095, 0.092, 0.09);
+    // Cool shadow, warm light. The lamps are tungsten; what fills in behind
+    // them should not be, or the whole room sits at one temperature.
+    gl.uniform3f(u.uAmbientSky, 0.150, 0.166, 0.205);
+    gl.uniform3f(u.uAmbientGround, 0.078, 0.084, 0.100);
     gl.uniform3f(u.uFogColor, dark[0] * 6, dark[1] * 6, dark[2] * 7);
     // Air does not visibly haze a 7 metre room. Keep it near nothing indoors
     // and let it build only across the length of something like a nave.
@@ -620,7 +623,7 @@ export class RoomScene {
 
     const sun = norm(SUN);
     gl.uniform3f(u.uSunDir, sun.x, sun.y, sun.z);
-    gl.uniform3f(u.uSunColor, 0.42, 0.40, 0.37);
+    gl.uniform3f(u.uSunColor, 0.30, 0.34, 0.43);
     gl.uniformMatrix4fv(u.uLightViewProj, false, this.lightVP || this.lightMatrix());
 
     gl.uniform1i(u.uAlbedo, 0);
