@@ -209,6 +209,10 @@ export class RoomScene {
     this.rayClock = 0;
     this.ripples = [];
     this.keys = new Set();
+    // Shift means one axis at a time: no diagonal drift while walking, and
+    // no drifting toward a wall while sliding along it.
+    this.shift = false;
+    this.walkAxis = null;
 
     this.drag = null;
     this.hover = null;
@@ -1204,12 +1208,43 @@ export class RoomScene {
     if (this.keys.has('s') || this.keys.has('arrowdown')) fwd -= 1;
     if (this.keys.has('a') || this.keys.has('arrowleft')) side -= 1;
     if (this.keys.has('d') || this.keys.has('arrowright')) side += 1;
-    if (!fwd && !side) return;
-    const step = WALK * dt;
+    if (!fwd && !side) { this.walkAxis = null; return; }
+
+    // Held shift walks you straight: forward and back, or left and right, but
+    // never both at once. The axis sticks to whichever one you were already
+    // moving along, so catching a second key mid-stride does not swing you
+    // round -- it just does nothing until you let the first one go.
+    if (this.shift) {
+      if (this.walkAxis === 'fwd' && fwd) side = 0;
+      else if (this.walkAxis === 'side' && side) fwd = 0;
+      else if (fwd) { this.walkAxis = 'fwd'; side = 0; }
+      else this.walkAxis = 'side';
+    } else {
+      this.walkAxis = null;
+    }
+
+    // Divided by the length of the input, or holding two keys walked you a
+    // factor of root two faster than holding one.
+    const step = (WALK * dt) / Math.hypot(fwd, side);
     const s = Math.sin(this.cam.yaw), c = Math.cos(this.cam.yaw);
     this.state.source.x += (s * fwd + c * side) * step;
     this.state.source.z += (c * fwd - s * side) * step;
     this.onChange('source');
+  }
+
+  /**
+   * Shift pins a drag to one axis of the room.
+   *
+   * Whichever of x and z you have moved further along wins and the other goes
+   * back to where the drag started, so you can slide along a wall without
+   * drifting toward it -- which is the one thing you cannot do by eye, and the
+   * thing that matters when you are listening to what that wall sends back.
+   */
+  constrainDrag(o) {
+    const from = this.drag && this.drag.from;
+    if (!this.shift || !from) return;
+    if (Math.abs(o.x - from.x) >= Math.abs(o.z - from.z)) o.z = from.z;
+    else o.x = from.x;
   }
 
   bind() {
@@ -1227,12 +1262,19 @@ export class RoomScene {
       if (map) {
         const dMe = Math.hypot(map.x - this.state.source.x, map.z - this.state.source.z);
         const dMic = Math.hypot(map.x - this.state.mic.x, map.z - this.state.mic.z);
-        this.drag = { kind: dMic < dMe ? 'mic' : 'source', viaMap: true };
+        const kind = dMic < dMe ? 'mic' : 'source';
+        const at = kind === 'mic' ? this.state.mic : this.state.source;
+        this.drag = { kind, viaMap: true, from: { x: at.x, z: at.z } };
         this.applyMap(map);
         return;
       }
       const hit = this.hitTest(x, y);
-      if (hit) this.drag = { kind: hit.id, grip: hit.grip, last: { x, y } };
+      if (hit) {
+        const at = hit.id === 'mic' ? this.state.mic
+          : hit.id === 'source' ? this.state.source : null;
+        this.drag = { kind: hit.id, grip: hit.grip, last: { x, y },
+                      from: at ? { x: at.x, z: at.z } : null };
+      }
       else this.drag = { kind: this.cam.mode === 'first' ? 'look' : 'orbit', last: { x, y } };
       e.preventDefault();
     });
@@ -1247,6 +1289,9 @@ export class RoomScene {
         return;
       }
       canvas.style.cursor = 'grabbing';
+      // Read it off the pointer as well as the keyboard: a drag that starts
+      // with focus in one of the controls never sees the key events.
+      this.shift = e.shiftKey;
       if (this.drag.viaMap) {
         const map = this.hitMinimap(x, y);
         if (map) this.applyMap(map);
@@ -1261,7 +1306,11 @@ export class RoomScene {
         // Indoors your eye sits at about capsule height, so a plane at that
         // height is edge-on. Slide the stand along the floor instead.
         const p = this.cam.onPlane(x, y, this.cam.mode === 'first' ? 0 : o.height);
-        if (p) { o.x = p.x; o.z = p.z; this.onChange(this.drag.kind); }
+        if (p) {
+          o.x = p.x; o.z = p.z;
+          this.constrainDrag(o);
+          this.onChange(this.drag.kind);
+        }
       } else if (this.drag.kind.startsWith('wall:')) {
         this.dragWall(this.drag.grip, x, y);
       }
@@ -1293,20 +1342,25 @@ export class RoomScene {
     const typing = (t) => t && /^(INPUT|SELECT|TEXTAREA)$/.test(t.tagName);
     window.addEventListener('keydown', (e) => {
       if (typing(e.target)) return;
+      this.shift = e.shiftKey;
       const k = e.key.toLowerCase();
       if (['w', 'a', 's', 'd', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(k)) {
         this.keys.add(k);
         e.preventDefault();
       }
     });
-    window.addEventListener('keyup', (e) => this.keys.delete(e.key.toLowerCase()));
-    window.addEventListener('blur', () => this.keys.clear());
+    window.addEventListener('keyup', (e) => {
+      this.shift = e.shiftKey;
+      this.keys.delete(e.key.toLowerCase());
+    });
+    window.addEventListener('blur', () => { this.keys.clear(); this.shift = false; });
   }
 
   applyMap(map) {
     const o = this.drag.kind === 'source' ? this.state.source : this.state.mic;
     o.x = map.x;
     o.z = map.z;
+    this.constrainDrag(o);
     this.onChange(this.drag.kind);
   }
 

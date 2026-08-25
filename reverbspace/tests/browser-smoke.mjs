@@ -387,6 +387,69 @@ const big = await page.evaluate(() => ({
 }));
 check('a cathedral is too big to ring at a note', big.disabled && /Too big/.test(big.text), big.text);
 
+// Shift keeps you on one axis: walking, that means no diagonal drift.
+//
+// Driven through walk() with a fixed time step rather than by holding keys for
+// a while, because what is being checked is the arithmetic and real elapsed
+// frames are not repeatable enough to measure a distance with.
+await page.click('.preset[data-id="studio"]');
+await page.waitForTimeout(500);
+const step = (keys, shift) => page.evaluate(([ks, sh]) => {
+  const rs = window.reverbspace.scene;
+  const st = window.reverbspace.state;
+  rs.cam.mode = 'first';
+  rs.cam.yaw = 0;                       // facing straight down +z
+  st.source.x = st.dims.w / 2;
+  st.source.z = st.dims.d / 2;
+  const from = { x: st.source.x, z: st.source.z };
+  rs.keys = new Set(ks);
+  rs.shift = sh;
+  rs.walkAxis = null;
+  rs.walk(0.1);
+  rs.keys = new Set();
+  rs.shift = false;
+  return { dx: st.source.x - from.x, dz: st.source.z - from.z };
+}, [keys, shift]);
+
+const free = await step(['w', 'd'], false);
+const held = await step(['w', 'd'], true);
+check('shift walks you straight instead of diagonally',
+  Math.abs(free.dx) > 0.05 && Math.abs(held.dx) < 1e-9 && held.dz > 0.05,
+  `free (${free.dx.toFixed(3)}, ${free.dz.toFixed(3)}) -> shift (${held.dx.toFixed(3)}, ${held.dz.toFixed(3)})`);
+
+const across = await step(['a'], true);
+check('shift across the room still goes across',
+  Math.abs(across.dz) < 1e-9 && across.dx < -0.05,
+  `(${across.dx.toFixed(3)}, ${across.dz.toFixed(3)})`);
+
+// And the same when dragging on the plan, where the axes are the room's.
+const dragTo = (shift, dx, dz) => page.evaluate(([sh, ddx, ddz]) => {
+  const rs = window.reverbspace.scene;
+  const st = window.reverbspace.state;
+  const from = { x: st.dims.w / 2, z: st.dims.d / 2 };
+  st.source.x = from.x;
+  st.source.z = from.z;
+  rs.drag = { kind: 'source', viaMap: true, from: { ...from } };
+  rs.shift = sh;
+  rs.applyMap({ x: from.x + ddx, z: from.z + ddz });
+  rs.drag = null;
+  rs.shift = false;
+  return { dx: st.source.x - from.x, dz: st.source.z - from.z };
+}, [shift, dx, dz]);
+
+const slid = await dragTo(true, 1.2, 0.3);       // mostly across, a little along
+check('shift slides you along one wall without drifting toward the other',
+  Math.abs(slid.dx - 1.2) < 1e-9 && Math.abs(slid.dz) < 1e-9,
+  `(${slid.dx.toFixed(2)}, ${slid.dz.toFixed(2)})`);
+const loose = await dragTo(false, 1.2, 0.3);
+check('without shift a drag goes where you put it',
+  Math.abs(loose.dz - 0.3) < 1e-9, `(${loose.dx.toFixed(2)}, ${loose.dz.toFixed(2)})`);
+
+const one = await step(['w'], false);
+check('two keys do not walk you faster than one',
+  Math.abs(Math.hypot(free.dx, free.dz) - Math.hypot(one.dx, one.dz)) < 1e-6,
+  `diagonal ${Math.hypot(free.dx, free.dz).toFixed(4)} m vs straight ${Math.hypot(one.dx, one.dz).toFixed(4)} m`);
+
 await browser.close();
 
 const failed = results.filter((r) => !r.pass);
