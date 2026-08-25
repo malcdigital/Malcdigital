@@ -17,6 +17,21 @@ export function windowOpening(preset, w, h) {
   return { x0: w / 2 - cw / 2, x1: w / 2 + cw / 2, y0: cy - 0.48, y1: cy + 0.48 };
 }
 
+/**
+ * How far below the top of someone's head their mouth is.
+ *
+ * The performer's height is their height -- it is what the eye height in the
+ * first-person view is measured down from, and what the control says. The
+ * sound does not leave from up there. A quarter of a metre puts a 1.6 m
+ * performer's mouth at 1.35, which is also where their vocal mic belongs.
+ *
+ * Fixed rather than a fraction of height: heads are much the same size
+ * whoever they are on.
+ */
+export const MOUTH_DROP = 0.25;
+
+export const mouthHeight = (stature) => Math.max(0.12, stature - MOUTH_DROP);
+
 /** How many wall sconces a run of this length carries. */
 export const sconcesPer = (len) => clamp(Math.round(len / 4.2), 1, 8);
 
@@ -64,10 +79,8 @@ export function defaultPlacement(state) {
     mic: {
       x: source.x,
       z: Math.min(d - 0.3, source.z + reach),
-      // Level with the performer, because the performer's height in here is
-      // the height the sound leaves from -- their mouth. That is where you
-      // put a vocal mic, and it is what the model is measuring from.
-      height: Math.min(source.height, h - 0.25),
+      // Level with the performer's mouth, which is where a vocal mic goes.
+      height: Math.min(mouthHeight(source.height), h - 0.25),
     },
   };
 }

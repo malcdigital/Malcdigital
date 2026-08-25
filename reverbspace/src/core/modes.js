@@ -17,6 +17,8 @@
 // shape sampled at the mic -- so walking around the room genuinely changes
 // which resonances you excite and which you hear, exactly as it does in life.
 
+import { mouthHeight } from './fittings.js';
+
 const C = 343;
 const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
 
@@ -88,7 +90,7 @@ export function roomModes(state, decay, limit = 20) {
         const at = (x, y, z) => Math.cos((nx * Math.PI * x) / w)
                               * Math.cos((ny * Math.PI * y) / h)
                               * Math.cos((nz * Math.PI * z) / d);
-        const couple = at(s.x, s.height, s.z) * at(m.x, m.height, m.z);
+        const couple = at(s.x, mouthHeight(s.height), s.z) * at(m.x, m.height, m.z);
         if (Math.abs(couple) < 0.02) continue;
         // Axial modes bounce between one pair of walls; tangential and oblique
         // ones strike more surface per second and die away faster for it.

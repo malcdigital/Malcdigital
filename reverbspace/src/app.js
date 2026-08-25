@@ -9,6 +9,7 @@ import { PRESETS, PRESETS_BY_ID } from './core/presets.js';
 import { TREATMENTS } from './core/materials.js';
 import { STAGES, MAX_STAGE } from './core/treatment.js';
 import { NOTE_NAMES, roomNote, roomModes, scaleForNote } from './core/modes.js';
+import { mouthHeight } from './core/fittings.js';
 import { MICS, MICS_BY_ID } from './core/mics.js';
 import { designReverb } from './dsp/designer.js';
 import { AudioEngine, TEST_SOURCES } from './audio/engine.js';
@@ -320,6 +321,11 @@ function syncInputs() {
   $('src-h').max = Math.max(2, state.dims.h - 0.2);
   $('src-h').value = state.source.height;
   $('src-h-out').textContent = `${state.source.height.toFixed(2)} m`;
+  // Say where the sound actually leaves from, since it is not the number on
+  // the control and it is what every distance in here is measured from.
+  $('mouth-note').textContent =
+    `Their mouth is at ${mouthHeight(state.source.height).toFixed(2)} m. `
+    + 'That is where the sound leaves from, and where the mic starts.';
 
   $('mic-type').value = state.mic.id;
   $('mic-blurb').textContent = MICS_BY_ID[state.mic.id].blurb;

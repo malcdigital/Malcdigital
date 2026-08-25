@@ -14,6 +14,7 @@ import { MATERIALS, TREATMENTS } from '../core/materials.js';
 import { PRESETS_BY_ID } from '../core/presets.js';
 import { MICS_BY_ID, polarGain } from '../core/mics.js';
 import { reflectionPaths, SPEED_OF_SOUND } from '../core/acoustics.js';
+import { mouthHeight } from '../core/fittings.js';
 import { buildProgram, DEPTH_VERT, DEPTH_FRAG } from './gl/shaders.js';
 import {
   MeshBuilder, perspectiveOffset, viewMatrix, multiply, orthographic, lookAt, invert4,
@@ -693,7 +694,9 @@ export class RoomScene {
 
   get sourcePoint() {
     const s = this.state.source;
-    return { x: s.x, y: s.height, z: s.z };
+    // Where the sound comes from, which is the mouth -- so that is where the
+    // reflection rays start and where the marker sits.
+    return { x: s.x, y: mouthHeight(s.height), z: s.z };
   }
 
   get micPoint() {

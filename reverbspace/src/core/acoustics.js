@@ -11,7 +11,7 @@ import {
 import { PRESETS_BY_ID } from './presets.js';
 import { MICS_BY_ID, polarGain, proximityCurve, directivityFactor, PATTERNS } from './mics.js';
 import { zoneCoverage } from './treatment.js';
-import { defaultPlacement } from './fittings.js';
+import { defaultPlacement, mouthHeight } from './fittings.js';
 
 export const SPEED_OF_SOUND = 343;
 export const NB = BANDS.length;
@@ -70,7 +70,7 @@ export function aimMic(state) {
 export function micDistance(state) {
   const dx = state.mic.x - state.source.x;
   const dz = state.mic.z - state.source.z;
-  const dy = state.mic.height - state.source.height;
+  const dy = state.mic.height - mouthHeight(state.source.height);
   return Math.sqrt(dx * dx + dz * dz + dy * dy);
 }
 
@@ -274,7 +274,8 @@ export function analyze(state) {
   const specFloor = 1 - surf.floor.scatter;
   const specCeil = 1 - surf.ceiling.scatter;
 
-  const sx = state.source.x, sy = state.source.height, sz = state.source.z;
+  // Sound leaves the mouth, not the crown.
+  const sx = state.source.x, sy = mouthHeight(state.source.height), sz = state.source.z;
   const mx = state.mic.x, my = state.mic.height, mz = state.mic.z;
 
   const dist0 = Math.max(0.08, micDistance(state));
