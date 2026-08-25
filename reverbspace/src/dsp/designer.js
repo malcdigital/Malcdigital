@@ -5,8 +5,8 @@
 // the per-sample code in reverb-engine.js stays a tight loop.
 
 import { BANDS } from '../core/materials.js';
-import { primeAtMost, onePole, onePoleMag } from './filters.js';
-import { roomModes } from '../core/modes.js';
+import { primeAtMost, onePole, onePoleMag, shelfMag } from './filters.js';
+import { roomModes, MODE_TOP_HZ } from '../core/modes.js';
 
 const LOW_SHELF_HZ = 250;
 const HIGH_SHELF_HZ = 3000;
@@ -97,6 +97,47 @@ function designModes(response, fs, level) {
   });
 }
 
+/**
+ * Where to put the low shelf's corner for this room.
+ *
+ * A first-order shelf fixed at 250 Hz is fine when the bands sit close
+ * together and cannot follow them when they do not: a bare timber room eats
+ * its own bass, so the decay runs 0.45 s at 125 Hz against 1.39 s at 1 kHz,
+ * and by 500 Hz a 250 Hz shelf has nearly stopped acting -- leaving that band
+ * several decibels hot.
+ *
+ * Fitted rather than guessed. The shelf has to reproduce a known curve: the
+ * per-pass gain the room wants at each band, relative to the mid reference.
+ * Try corners across the range and keep whichever reproduces it best in the
+ * least-squares sense, over the four bands the low shelf has any say in.
+ */
+function lowShelfCornerFor(rt60, fs, length) {
+  const bands = [125, 250, 500, 1000];
+  // What the room asks the shelf for, in dB relative to 1 kHz.
+  const perPassDb = (rt) => (-60 * length) / (fs * Math.max(rt, 1e-3));
+  const want = bands.map((_, i) => perPassDb(rt60[i]) - perPassDb(rt60[3]));
+  // Only worth moving for a room whose bands really do pull apart. Below
+  // about half a decibel per pass the fixed corner is already within the
+  // noise, and fitting against a flat curve just picks a corner at random.
+  if (Math.abs(want[0]) < 0.5) return LOW_SHELF_HZ;
+
+  // The shelf's own DC ratio is set by the 125 Hz band, whatever the corner.
+  const ratio = Math.pow(10, want[0] / 20);
+  let best = { hz: LOW_SHELF_HZ, err: Infinity };
+  for (let k = 0; k <= 16; k++) {
+    const hz = 150 * Math.pow(700 / 150, k / 16);
+    const a = onePole(hz, fs);
+    const ref = 20 * Math.log10(shelfMag(a, ratio, 1000, fs));
+    let err = 0;
+    for (let i = 0; i < bands.length; i++) {
+      const got = 20 * Math.log10(shelfMag(a, ratio, bands[i], fs)) - ref;
+      err += (got - want[i]) * (got - want[i]);
+    }
+    if (err < best.err) best = { hz, err };
+  }
+  return best.hz;
+}
+
 /** Sign patterns for feeding and tapping the delay network. */
 function hadamardRow(row, n) {
   const out = new Array(n);
@@ -160,9 +201,11 @@ export function designReverb(response, sampleRate, opts = {}) {
   const tMin = clamp(tMfp * 0.42, 0.0045, 0.085);
   const tMax = clamp(tMfp * 1.75, tMin * 2.2, 0.185);
 
-  // How much of each shelf is still active at the 1 kHz reference.
-  const lowAt1k = onePoleMag(onePole(LOW_SHELF_HZ, fs), 1000, fs);
-  const highAt1k = onePoleMag(onePole(HIGH_SHELF_HZ, fs), 1000, fs);
+  // Fitted against a representative line: the shelf is shared by all of
+  // them and the middle of the spread is what it should suit.
+  const lowHz = lowShelfCornerFor(rt60, fs, primeAtMost(Math.sqrt(tMin * tMax) * fs));
+  const lowA = onePole(lowHz, fs);
+  const highA = onePole(HIGH_SHELF_HZ, fs);
 
   const inSigns = hadamardRow(1, LINES);
   const outLSigns = hadamardRow(2, LINES);
@@ -179,8 +222,10 @@ export function designReverb(response, sampleRate, opts = {}) {
     const highRatio = clamp(gainFor(5) / gMidRaw, 0.02, 4);
     // The shelves are first-order, so their skirts still tilt 1 kHz. Divide
     // that bleed back out, or the mid-band tail comes up short of the room's
-    // actual reverberation time.
-    const bleed = (1 + (lowRatio - 1) * lowAt1k) * (1 + (highRatio - 1) * (1 - highAt1k));
+    // actual reverberation time. Taken as complex magnitudes: a bare timber
+    // room's bands tilt three to one and the real-valued approximation this
+    // used to make overshot by four decibels at 500 Hz.
+    const bleed = shelfMag(lowA, lowRatio, 1000, fs) * shelfMag(highA, highRatio, 1000, fs, true);
     // The shelves multiply the mid gain, so cap on the loudest band or the
     // network will not decay.
     const peak = Math.max(1, lowRatio, highRatio);
@@ -239,9 +284,15 @@ export function designReverb(response, sampleRate, opts = {}) {
       width,
     },
     modes: designModes(response, fs, tailLevel * scale),
+    // The bank is a low-frequency phenomenon and gets filtered as one. Even
+    // all-pole resonators have a skirt, and sixteen of them summing in phase
+    // two octaves above the highest mode put four decibels of tail at 500 Hz
+    // in an untreated room. Two poles just above the top mode remove it
+    // without touching any resonance the bank is actually for.
+    modeLowPass: onePole(MODE_TOP_HZ * 1.6, fs),
     micToneDb: response.micTone.slice(),
     proximityDb: response.proximity.slice(),
-    shelfHz: { low: LOW_SHELF_HZ, high: HIGH_SHELF_HZ },
+    shelfHz: { low: lowHz, high: HIGH_SHELF_HZ },
     bands: BANDS.slice(),
     meta: {
       rt60,

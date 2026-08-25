@@ -22,7 +22,7 @@ export const PRESETS = [
   {
     id: 'studio',
     name: 'Studio',
-    blurb: 'Small, dead, controlled. The tail is over before you notice it.',
+    blurb: 'Small and close, wood on every surface. What you do to the walls shows up fast.',
     dims: { w: 7.5, d: 5.5, h: 3.2 },
     sizeRange: [0.45, 2.6],
     // Gable running the length of the room. Rises this far above the mean at
@@ -31,7 +31,7 @@ export const PRESETS = [
     pitch: 0.46,
     surfaces: { floor: 'woodFloor', ceiling: 'woodPanel', walls: 'woodPanel' },
     seating: null,
-    treatment: { stage: 5, type: 'rockwool' },
+    treatment: { stage: 0, type: 'foam' },
     sourceAt: { x: 0.5, z: 0.35 },
     micDistance: 0.85,
     palette: '#e8a33d',

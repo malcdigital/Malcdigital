@@ -64,7 +64,10 @@ export function defaultPlacement(state) {
     mic: {
       x: source.x,
       z: Math.min(d - 0.3, source.z + reach),
-      height: Math.min(1.5, h * 0.45),
+      // Level with the performer, because the performer's height in here is
+      // the height the sound leaves from -- their mouth. That is where you
+      // put a vocal mic, and it is what the model is measuring from.
+      height: Math.min(source.height, h - 0.25),
     },
   };
 }

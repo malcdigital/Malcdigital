@@ -20,6 +20,9 @@
 const C = 343;
 const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
 
+/** The highest a mode is modelled. Shared with the bank's own low-pass. */
+export const MODE_TOP_HZ = 140;
+
 export const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 
 /** MIDI note number for a frequency, as a real number. A4 = 440 = note 69. */
@@ -71,7 +74,7 @@ export function roomModes(state, decay, limit = 20) {
   // accounts of the same energy, and sixteen resonator skirts summing
   // coherently an octave above put 6 dB of extra tail at 500 Hz in a small
   // room. Below 140 Hz there is no band for them to argue with.
-  const top = Math.min(decay.schroeder * 1.2, 140);
+  const top = Math.min(decay.schroeder * 1.2, MODE_TOP_HZ);
   const nMax = (len) => Math.floor((2 * len * top) / C);
   const out = [];
 

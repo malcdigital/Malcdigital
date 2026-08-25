@@ -18,6 +18,30 @@ export function onePoleMag(a, f, fs) {
 }
 
 /**
+ * Magnitude of the shelf a feedback line actually applies, at frequency f.
+ *
+ * The shelves are built as `v + (ratio - 1) * filtered(v)`, and the filter has
+ * phase as well as magnitude -- at 1 kHz a 250 Hz one-pole is a quarter of the
+ * amplitude but three quarters of a cycle behind. Adding its magnitude to one
+ * as though it were a real number is close enough while the ratio is near
+ * unity and badly wrong when it is not, which is exactly the case in a bare
+ * timber room: the panelling eats the bass, the ratio goes far below one, and
+ * the compensation that keeps the mid band on target overshoots.
+ */
+export function shelfMag(a, ratio, f, fs, high = false) {
+  const w = (TAU * f) / fs;
+  // One-pole lowpass (1-a)/(1 - a z^-1), as a complex number.
+  const dRe = 1 - a * Math.cos(w);
+  const dIm = a * Math.sin(w);
+  const den = dRe * dRe + dIm * dIm;
+  let re = ((1 - a) * dRe) / den;
+  let im = ((1 - a) * -dIm) / den;
+  // The high shelf works off what the lowpass did not pass.
+  if (high) { re = 1 - re; im = -im; }
+  return Math.hypot(1 + (ratio - 1) * re, (ratio - 1) * im);
+}
+
+/**
  * Find the one-pole cutoff whose response at fRef is `ratio` (0..1).
  * Bisection: monotonic in a, so it always converges.
  */

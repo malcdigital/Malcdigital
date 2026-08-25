@@ -251,15 +251,16 @@ const lift = lifts.slice(0, 6).reduce((a, b) => a + b, 0) / 6;
 check('scattering puts light in the air',
   lift > 0.015, `brightest patches +${(lift * 100).toFixed(1)}%`);
 
-// A mic held close throws the room out; one set back brings it in.
-const near = await frameAt({ tier: 2, focus: 0.5, pitch: 0 });
-const far = await frameAt({ tier: 2, focus: 4.0, pitch: 0 });
-// Six percent, not fifteen: the lens has been stopped a long way down since
-// this was written, deliberately, and what is being checked is that focus
-// still tracks the mic -- a dead pass reads 1.00, and this reads about 1.11.
-check('the lens focuses on the mic, and a close mic softens the room',
-  far.detail > near.detail * 1.06,
-  `detail ${near.detail.toFixed(2)} at 0.5 m -> ${far.detail.toFixed(2)} at 4 m`);
+// With the mic held close, the far wall softens. Compared against the same
+// frame with the lens switched off rather than against a different focus
+// distance: moving the mic to change the focus also moves the mic, and at
+// 40 cm it lands in the patch of far wall being measured and brings its own
+// detail with it. Same geometry, same everything, only the lens differs.
+const lensOff = await frameAt({ tier: 0, focus: 0.4, pitch: 0 });
+const lensOn = await frameAt({ tier: 1, focus: 0.4, pitch: 0 });
+check('the lens softens the far wall when the mic is held close',
+  lensOff.detail > lensOn.detail * 1.06,
+  `detail ${lensOn.detail.toFixed(2)} with the lens, ${lensOff.detail.toFixed(2)} without`);
 
 // Each mic is now modelled as the thing it actually is -- a U 87 basket, an
 // SM7B in its yoke, a 250 mm shotgun tube -- so choosing one has to rebuild

@@ -118,6 +118,8 @@ export class ReverbEngine {
     this.modes = [];
     this.modeDcX = 0;
     this.modeDcY = 0;
+    this.modeLpA = 0;
+    this.modeLpZ = [0, 0];
     // One-pole high-pass on the tail, so the delay network stops competing
     // with the modes for the bottom end.
     this.lateHpA = 0;
@@ -244,8 +246,13 @@ export class ReverbEngine {
     this.lateDelay = clamp(design.late.predelaySamples, 1, this.mask - 4);
     this.lateGainL = design.late.gainL;
     this.lateGainR = design.late.gainR;
+    // The shelf corners are fitted to the room, not fixed: the design says
+    // where they go and the engine had been ignoring it.
+    this.shelfLowA = onePole(design.shelfHz ? design.shelfHz.low : 250, fs);
+    this.shelfHighA = onePole(design.shelfHz ? design.shelfHz.high : 3000, fs);
     this.lateLowK = design.late.low - 1;
     this.lateHighK = design.late.high - 1;
+    this.modeLpA = design.modeLowPass || 0;
     const hp = design.late.highPassHz || 0;
     this.lateHpA = hp > 0 ? 1 / (1 + (2 * Math.PI * hp) / fs) : 0;
 
@@ -305,6 +312,7 @@ export class ReverbEngine {
     for (const m of this.modes) { m.z1 = 0; m.z2 = 0; }
     this.modeDcX = 0;
     this.modeDcY = 0;
+    this.modeLpZ = [0, 0];
     this.lateHpX = [0, 0];
     this.lateHpY = [0, 0];
     this.dcZ = [0, 0];
@@ -474,7 +482,11 @@ export class ReverbEngine {
         const dcOut = 0.999 * (this.modeDcY + mo - this.modeDcX);
         this.modeDcX = mo;
         this.modeDcY = dcOut;
-        mo = dcOut * this.dip;
+        // Two poles just above the highest mode, so the bank's skirts stop
+        // where the delay network's own account of the room begins.
+        this.modeLpZ[0] += (1 - this.modeLpA) * (dcOut - this.modeLpZ[0]);
+        this.modeLpZ[1] += (1 - this.modeLpA) * (this.modeLpZ[0] - this.modeLpZ[1]);
+        mo = this.modeLpZ[1] * this.dip;
         ll += mo;
         lr += mo;
       }
