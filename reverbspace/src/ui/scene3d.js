@@ -143,6 +143,33 @@ class Camera {
     });
   }
 
+  /**
+   * How far across the floor a cursor movement of (dx, dy) pixels shifts
+   * something standing at `at`.
+   *
+   * Casting the cursor straight onto the floor cannot work in first person:
+   * the mic stands at about eye height, so its capsule sits within a couple of
+   * degrees of the horizon, and the floor under a ray that shallow is tens of
+   * metres away. One pixel of cursor became a metre of room and the mic shot
+   * to the back wall. This measures how the floor itself moves on screen at
+   * the point you grabbed and inverts that, which stays sane wherever you are
+   * looking -- and, being a small step each frame, stays accurate as you drag.
+   */
+  floorDelta(at, dxPx, dyPx) {
+    const step = 0.25;
+    const o = this.project({ x: at.x, y: 0, z: at.z });
+    const ax = this.project({ x: at.x + step, y: 0, z: at.z });
+    const az = this.project({ x: at.x, y: 0, z: at.z + step });
+    if (!o || !ax || !az) return null;
+    // The two columns of the matrix taking floor metres to screen pixels.
+    const a = (ax.x - o.x) / step, c = (ax.y - o.y) / step;
+    const b = (az.x - o.x) / step, d = (az.y - o.y) / step;
+    const det = a * d - b * c;
+    // Looking straight down the floor's own plane there is nothing to invert.
+    if (Math.abs(det) < 1e-4) return null;
+    return { x: (d * dxPx - b * dyPx) / det, z: (a * dyPx - c * dxPx) / det };
+  }
+
   onPlane(px, py, height) {
     const d = this.ray(px, py);
     if (Math.abs(d.y) < 1e-6) return null;
@@ -489,16 +516,13 @@ export class RoomScene {
   rebuildIfNeeded() {
     if (!this.gl || this.failed) return;
     const s = this.state;
-    // The reflection-point panels are placed off the performer and the mic, so
-    // where those two are standing is part of what the room is. Quantised to
-    // 10 cm: rebuilding every wall on every frame of a drag is a lot of mesh
-    // for a panel that has not visibly moved.
-    const placed = (s.treatment.stage ?? 0) > 0
-      ? [s.source.x, s.source.z, s.mic.x, s.mic.z].map((v) => Math.round(v * 10)).join(',')
-      : '';
+    // No live positions in here. The treatment is installed for the room's
+    // working position and stays put, so walking about cannot change a wall --
+    // which also means not rebuilding every wall in the room on every frame of
+    // a drag, for panels that were never going to move.
     const sig = [
       s.presetId, s.dims.w.toFixed(3), s.dims.d.toFixed(3), s.dims.h.toFixed(3),
-      s.treatment.stage, s.treatment.type, s.source.height.toFixed(2), placed,
+      s.treatment.stage, s.treatment.type, s.source.height.toFixed(2),
     ].join('|');
     if (sig !== this.signature) {
       this.signature = sig;
@@ -1303,14 +1327,18 @@ export class RoomScene {
         this.cam.orbitPitch = clamp(this.cam.orbitPitch + (y - this.drag.last.y) * 0.006, -0.15, 1.35);
       } else if (this.drag.kind === 'source' || this.drag.kind === 'mic') {
         const o = this.drag.kind === 'source' ? this.state.source : this.state.mic;
-        // Indoors your eye sits at about capsule height, so a plane at that
-        // height is edge-on. Slide the stand along the floor instead.
-        const p = this.cam.onPlane(x, y, this.cam.mode === 'first' ? 0 : o.height);
-        if (p) {
-          o.x = p.x; o.z = p.z;
-          this.constrainDrag(o);
-          this.onChange(this.drag.kind);
+        if (this.cam.mode === 'first') {
+          // Move it by how far the cursor moved, not to where the cursor is:
+          // from in here the floor under the cursor is most of a room away.
+          const d = this.cam.floorDelta(o, x - this.drag.last.x, y - this.drag.last.y);
+          if (d) { o.x += d.x; o.z += d.z; }
+        } else {
+          // From outside, looking down, the cursor lands where you mean it to.
+          const p = this.cam.onPlane(x, y, o.height);
+          if (p) { o.x = p.x; o.z = p.z; }
         }
+        this.constrainDrag(o);
+        this.onChange(this.drag.kind);
       } else if (this.drag.kind.startsWith('wall:')) {
         this.dragWall(this.drag.grip, x, y);
       }

@@ -11,6 +11,7 @@ import {
 import { PRESETS_BY_ID } from './presets.js';
 import { MICS_BY_ID, polarGain, proximityCurve, directivityFactor, PATTERNS } from './mics.js';
 import { zoneCoverage } from './treatment.js';
+import { defaultPlacement } from './fittings.js';
 
 export const SPEED_OF_SOUND = 343;
 export const NB = BANDS.length;
@@ -33,17 +34,9 @@ const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
  * model and the treatment, which are choices, and moves only the placement.
  */
 export function resetPlacement(state) {
-  const p = PRESETS_BY_ID[state.presetId];
-  const { w, d, h } = state.dims;
-  state.source.x = p.sourceAt.x * w;
-  state.source.z = p.sourceAt.z * d;
-  state.source.height = Math.min(1.6, h * 0.5);
-  // The default distance is a fraction of the room, so it still makes sense
-  // after the room has been resized or a wall dragged.
-  const reach = p.micDistance * (d / p.dims.d);
-  state.mic.x = state.source.x;
-  state.mic.z = Math.min(d - 0.3, state.source.z + reach);
-  state.mic.height = Math.min(1.5, h * 0.45);
+  const { source, mic } = defaultPlacement(state);
+  Object.assign(state.source, source);
+  Object.assign(state.mic, mic);
   state.mic.aimAtSource = true;
   aimMic(state);
   return state;

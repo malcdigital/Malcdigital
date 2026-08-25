@@ -8,7 +8,7 @@ import { BANDS } from '../src/core/materials.js';
 import {
   MAX_STAGE, treatmentZones, zoneCoverage, cornerChord, reflectionPointU,
 } from '../src/core/treatment.js';
-import { fittings } from '../src/core/fittings.js';
+import { fittings, defaultPlacement } from '../src/core/fittings.js';
 
 const finite = (xs) => xs.every((v) => Number.isFinite(v));
 
@@ -114,13 +114,29 @@ test('a panel whose spot is taken slides to where it fits', () => {
   assert.ok(!covers, 'the door is clear');
 });
 
-test('the reflection point moves when the performer does', () => {
+test('panels are screwed to the wall and stay there', () => {
+  // The treatment is installed for the room's working position, not for
+  // wherever you have wandered to. Panels that slid along the wall as you
+  // dragged the mic looked like a rendering fault, and were not true either:
+  // where the reflection lands now is what the ray overlay is for.
   const s = makeState('studio');
-  const before = reflectionPointU(s, 3);
+  s.treatment.stage = 2;
+  const before = JSON.stringify(treatmentZones(s).zones);
   s.source.z += 1.4;
   s.mic.z += 1.4;
-  assert.ok(Math.abs(reflectionPointU(s, 3) - before) > 1.0,
-    'the mirror point should follow the pair that makes it');
+  s.source.x -= 1.1;
+  s.mic.x -= 0.6;
+  assert.equal(JSON.stringify(treatmentZones(s).zones), before);
+});
+
+test('the reflection point is the one for the working position', () => {
+  // Mirror the performer in the far wall, draw a line to the mic, and see
+  // where it crosses. Worked out here the long way, from the defaults.
+  const s = makeState('studio');
+  const { source, mic } = defaultPlacement(s);
+  const { w } = s.dims;
+  const t = (w - source.x) / ((w - source.x) + (w - mic.x));
+  assert.ok(Math.abs(reflectionPointU(s, 3) - (source.z + (mic.z - source.z) * t)) < 1e-9);
 });
 
 test('foam eats the top end; rockwool takes the bass with it', () => {

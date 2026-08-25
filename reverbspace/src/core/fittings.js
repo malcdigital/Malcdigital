@@ -39,3 +39,32 @@ export function fittings(state) {
     lampY: clamp((h - rise) * 0.58, 1.4, 5.0),
   };
 }
+
+/**
+ * Where the room is set up to be used from: the spot the preset puts the
+ * performer, and the mic in front of them.
+ *
+ * Lives here with the windows and the doors rather than with the model,
+ * because it is the same kind of fact -- something about the room that does
+ * not move when you do. The treatment is installed against it.
+ */
+export function defaultPlacement(state) {
+  const p = PRESETS_BY_ID[state.presetId];
+  const { w, d, h } = state.dims;
+  const source = {
+    x: p.sourceAt.x * w,
+    z: p.sourceAt.z * d,
+    height: Math.min(1.6, h * 0.5),
+  };
+  // The default distance is a fraction of the room, so it still makes sense
+  // after the room has been resized or a wall dragged.
+  const reach = p.micDistance * (d / p.dims.d);
+  return {
+    source,
+    mic: {
+      x: source.x,
+      z: Math.min(d - 0.3, source.z + reach),
+      height: Math.min(1.5, h * 0.45),
+    },
+  };
+}

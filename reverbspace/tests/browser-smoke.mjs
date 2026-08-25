@@ -301,9 +301,9 @@ check('every step of the plan is named and puts more up',
 check('the bare room rings longer than the treated one',
   steps[0].rt > steps[6].rt * 2, `${steps[0].rt}s -> ${steps[6].rt}s`);
 
-// The panels at the reflection points are placed off the performer and the
-// mic, so moving either of them has to move the panels.
-await atStage(1);
+// Panels are installed for the room's working position and stay put. Walking
+// about must not move a single one of them.
+await atStage(2);
 const panelsNow = () => page.evaluate(async () => {
   const t = await import('/src/core/treatment.js');
   return JSON.stringify(t.treatmentZones(window.reverbspace.state).zones);
@@ -312,11 +312,13 @@ const beforeMove = await panelsNow();
 await page.evaluate(() => {
   const rs = window.reverbspace;
   rs.state.source.z += 1.2;
+  rs.state.source.x -= 0.9;
   rs.state.mic.z += 1.2;
   rs.scene.onChange('source');
 });
 await page.waitForTimeout(400);
-check('the reflection panels follow the performer', (await panelsNow()) !== beforeMove);
+check('walking about does not slide the panels along the wall',
+  (await panelsNow()) === beforeMove);
 
 // And putting everyone back has to actually put them back.
 const places = () => page.evaluate(() => {
@@ -444,6 +446,43 @@ check('shift slides you along one wall without drifting toward the other',
 const loose = await dragTo(false, 1.2, 0.3);
 check('without shift a drag goes where you put it',
   Math.abs(loose.dz - 0.3) < 1e-9, `(${loose.dx.toFixed(2)}, ${loose.dz.toFixed(2)})`);
+
+// Dragging the mic in first person has to move it by roughly what the cursor
+// did, and land where you let go -- not shoot off to the far wall.
+await page.click('#reset-places');
+await page.waitForTimeout(350);
+const micDrag = async (dxPx, dyPx) => {
+  // Earlier checks leave the camera pointing wherever they needed it, so aim
+  // it at the mic before trying to grab the mic.
+  await page.evaluate(() => {
+    const rs = window.reverbspace;
+    rs.scene.setMode('first');
+    rs.scene.lookAtMic();
+    rs.scene.onChange('mic');
+  });
+  await page.waitForTimeout(250);
+  const box = await page.locator('#room').boundingBox();
+  const at = await page.evaluate(() => window.reverbspace.screenOf('mic'));
+  if (!at) return { moved: NaN, before: null, after: null, offScreen: true };
+  const before = await page.evaluate(() => ({ ...window.reverbspace.state.mic }));
+  await page.mouse.move(box.x + at.x, box.y + at.y);
+  await page.mouse.down();
+  await page.mouse.move(box.x + at.x + dxPx, box.y + at.y + dyPx, { steps: 12 });
+  await page.mouse.up();
+  await page.waitForTimeout(250);
+  const after = await page.evaluate(() => ({ ...window.reverbspace.state.mic }));
+  return { moved: Math.hypot(after.x - before.x, after.z - before.z), before, after };
+};
+const nudge = await micDrag(70, 20);
+check('dragging the mic moves it by a sane amount, not to the far wall',
+  !nudge.offScreen && nudge.moved > 0.05 && nudge.moved < 1.6,
+  nudge.offScreen ? 'the mic was not on screen' : `${nudge.moved.toFixed(2)} m for 70 px`);
+// And it must still be where you left it, not clamped against a wall.
+const dims = await page.evaluate(() => ({ ...window.reverbspace.state.dims }));
+check('the mic ends up inside the room, clear of the walls',
+  !!nudge.after && nudge.after.x > 0.25 && nudge.after.x < dims.w - 0.25
+  && nudge.after.z > 0.25 && nudge.after.z < dims.d - 0.25,
+  nudge.after ? `(${nudge.after.x.toFixed(2)}, ${nudge.after.z.toFixed(2)}) in ${dims.w.toFixed(1)}x${dims.d.toFixed(1)}` : 'off screen');
 
 const one = await step(['w'], false);
 check('two keys do not walk you faster than one',

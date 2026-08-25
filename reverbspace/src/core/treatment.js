@@ -15,7 +15,7 @@
 // doors afterwards and the model never heard about it.
 
 import { PRESETS_BY_ID } from './presets.js';
-import { fittings, sconcesPer } from './fittings.js';
+import { fittings, sconcesPer, defaultPlacement } from './fittings.js';
 
 const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
 
@@ -66,10 +66,16 @@ export function wallAxes(w, d) {
  * crosses is the one point on that wall that sends a specular reflection
  * straight into the capsule. It is the first thing anyone treats, and it is
  * the reason a panel belongs somewhere in particular rather than anywhere.
+ *
+ * Worked out for the room's own working position, not for wherever you happen
+ * to be standing this second. Panels are screwed to a wall: they are installed
+ * once, for the spot the room is set up around. Having them slide about while
+ * you drag the mic looked like a rendering fault, and it was not true either.
+ * Where the reflection lands *now* is what the ray overlay is for.
  */
 export function reflectionPointU(state, wallId) {
   const { w, d } = state.dims;
-  const s = state.source, m = state.mic;
+  const { source: s, mic: m } = defaultPlacement(state);
   // Distance from each of the two points to the wall plane; the crossing
   // splits the run between them in that ratio.
   const split = (ds, dm) => (ds + dm < 1e-6 ? 0.5 : ds / (ds + dm));
@@ -184,7 +190,8 @@ export function treatmentZones(state) {
   // decides *where*, and a curtain then runs floor to rail over that span.
   const hanging = state.treatment.type === 'drapes';
   const railY = Math.min(f.eaves - 0.12, h * 0.94);
-  const ear = clamp((state.source.height + state.mic.height) / 2, 0.7, f.eaves - 0.7);
+  const seat = defaultPlacement(state);
+  const ear = clamp((seat.source.height + seat.mic.height) / 2, 0.7, f.eaves - 0.7);
   const panelH = clamp(h * 0.44, 0.9, 2.0);
   const band = (v) => (hanging ? { v0: 0.008, v1: railY } : { v0: v - panelH / 2, v1: v + panelH / 2 });
 
@@ -217,7 +224,7 @@ export function treatmentZones(state) {
   // 3: a broad band across the wall behind the performer. Which wall that is
   // depends on which way round the mic is, so work it out rather than assume.
   if (stage >= 3) {
-    const behind = state.mic.z > state.source.z ? 0 : 1;
+    const behind = seat.mic.z > seat.source.z ? 0 : 1;
     span(behind, walls[behind].len * 0.1, walls[behind].len * 0.9, ear, panelH * 1.15);
   }
 
