@@ -5,6 +5,10 @@ import {
 } from '../src/core/acoustics.js';
 import { PRESETS } from '../src/core/presets.js';
 import { BANDS } from '../src/core/materials.js';
+import {
+  MAX_STAGE, treatmentZones, zoneCoverage, cornerChord, reflectionPointU,
+} from '../src/core/treatment.js';
+import { fittings } from '../src/core/fittings.js';
 
 const finite = (xs) => xs.every((v) => Number.isFinite(v));
 
@@ -51,20 +55,78 @@ test('a bigger space also pushes the first reflection later', () => {
 });
 
 test('treatment shortens the tail, and more of it shortens it further', () => {
-  const rtAt = (cov) => {
+  const rtAt = (stage) => {
     const s = makeState('hall');
-    s.treatment = { coverage: cov, type: 'rockwool' };
+    s.treatment = { stage, type: 'rockwool' };
     return decayProfile(s).midRt;
   };
-  const bare = rtAt(0), some = rtAt(0.4), lots = rtAt(0.9);
-  assert.ok(some < bare * 0.9, `${bare.toFixed(2)} -> ${some.toFixed(2)}`);
-  assert.ok(lots < some, `${some.toFixed(2)} -> ${lots.toFixed(2)}`);
+  const bare = rtAt(0), some = rtAt(3), lots = rtAt(6);
+  // A mid stage is a handful of panels, and in fifteen thousand cubic metres
+  // a handful of panels is a few percent -- which is the right answer, so the
+  // magnitude belongs at the top of the plan, not the middle of it. That every
+  // single step is a step down is asserted on its own below.
+  assert.ok(some < bare, `${bare.toFixed(2)} -> ${some.toFixed(2)}`);
+  assert.ok(lots < bare * 0.7, `${bare.toFixed(2)} -> ${lots.toFixed(2)}`);
+});
+
+test('every step of the plan is a step down, in every room', () => {
+  for (const preset of ['studio', 'hall', 'cathedral', 'theater']) {
+    const s = makeState(preset);
+    let last = Infinity;
+    const seen = [];
+    for (let stage = 0; stage <= MAX_STAGE; stage++) {
+      s.treatment.stage = stage;
+      const rt = decayProfile(s).midRt;
+      seen.push(rt.toFixed(2));
+      assert.ok(rt < last, `${preset} stage ${stage} did not shorten: ${seen.join(' ')}`);
+      last = rt;
+    }
+  }
+});
+
+test('the model measures the treatment that is actually on the walls', () => {
+  // The plan is the only source of truth: the coverage the decay is computed
+  // from has to be the area of the rectangles the renderer draws, cuts around
+  // the window and the door included. Recompute it here the long way.
+  const s = makeState('studio');
+  for (let stage = 0; stage <= MAX_STAGE; stage++) {
+    s.treatment.stage = stage;
+    const plan = treatmentZones(s);
+    const { w, d, h } = s.dims;
+    let area = 0;
+    for (const wall of plan.zones) for (const r of wall) area += (r.u1 - r.u0) * (r.v1 - r.v0);
+    if (plan.corners) area += 4 * cornerChord(s) * Math.min(fittings(s).eaves - 0.05, h);
+    assert.ok(Math.abs(zoneCoverage(s).wall - area / (2 * (w + d) * h)) < 1e-9,
+      `stage ${stage}`);
+  }
+});
+
+test('a panel whose spot is taken slides to where it fits', () => {
+  // This studio's left-wall reflection point lands on the door, with a patch
+  // panel and a sconce either side of it. The step still has to place a panel.
+  const s = makeState('studio');
+  s.treatment = { stage: 1, type: 'rockwool' };
+  const plan = treatmentZones(s);
+  assert.ok(plan.zones[2].length > 0, 'nothing placed on the wall with the door');
+  assert.ok(plan.zones[3].length > 0, 'nothing placed on the far side wall');
+  const ideal = reflectionPointU(s, 2);
+  const covers = plan.zones[2].some((r) => r.u0 <= ideal && r.u1 >= ideal);
+  assert.ok(!covers, 'the door is clear');
+});
+
+test('the reflection point moves when the performer does', () => {
+  const s = makeState('studio');
+  const before = reflectionPointU(s, 3);
+  s.source.z += 1.4;
+  s.mic.z += 1.4;
+  assert.ok(Math.abs(reflectionPointU(s, 3) - before) > 1.0,
+    'the mirror point should follow the pair that makes it');
 });
 
 test('foam eats the top end; rockwool takes the bass with it', () => {
   const profile = (type) => {
     const s = makeState('hall');
-    s.treatment = { coverage: 0.8, type };
+    s.treatment = { stage: 6, type };
     return decayProfile(s).rt60;
   };
   const bare = profile('foam').map(() => null);
@@ -79,10 +141,10 @@ test('foam eats the top end; rockwool takes the bass with it', () => {
 
 test('diffusers scatter without killing the tail', () => {
   const s = makeState('hall');
-  s.treatment = { coverage: 0.9, type: 'diffusion' };
+  s.treatment = { stage: 6, type: 'diffusion' };
   const diffused = analyze(s);
   const s2 = makeState('hall');
-  s2.treatment = { coverage: 0.9, type: 'rockwool' };
+  s2.treatment = { stage: 6, type: 'rockwool' };
   const absorbed = analyze(s2);
   assert.ok(diffused.decay.midRt > absorbed.decay.midRt * 1.5, 'diffusion keeps the length');
   const sum = (r) => r.early.reduce((a, t) => a + t.left[3] * t.left[3], 0);

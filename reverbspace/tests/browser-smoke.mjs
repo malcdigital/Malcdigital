@@ -7,6 +7,7 @@
 //   node tests/browser-smoke.mjs
 
 import { chromium } from 'playwright';
+import { MAX_STAGE } from '../src/core/treatment.js';
 import { mkdirSync, existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -123,17 +124,17 @@ for (const [i, id] of ['hall', 'cathedral', 'theater'].entries()) {
 // Treatment should visibly change the walls and shorten the tail.
 await page.click('.preset[data-id="studio"]');
 await page.waitForTimeout(300);
-const rtAt = async (coverage) => page.evaluate((c) => {
+const rtAt = async (stage) => page.evaluate((c) => {
   const t = document.querySelector('#treat');
   t.value = String(c);
   t.dispatchEvent(new Event('input', { bubbles: true }));
   return new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => {
     r(document.querySelector('#stats dd').textContent);
   })));
-}, coverage);
+}, stage);
 const bare = parseFloat(await rtAt(0));
 await page.screenshot({ path: `${SHOTS}/05-studio-untreated.png` });
-const treated = parseFloat(await rtAt(0.95));
+const treated = parseFloat(await rtAt(MAX_STAGE));
 await page.screenshot({ path: `${SHOTS}/06-studio-treated.png` });
 check('soundproofing shortens the tail', treated < bare * 0.8, `${bare}s -> ${treated}s`);
 
@@ -265,6 +266,61 @@ const counts = Object.values(micMeshes);
 check('every mic is built as itself',
   new Set(counts).size === counts.length,
   Object.entries(micMeshes).map(([k, v]) => `${k} ${v}`).join(', '));
+
+// Soundproofing goes on in named steps, and each one has to actually change
+// the room -- both the picture and the number the decay is computed from.
+await page.click('.preset[data-id="studio"]');
+await page.waitForTimeout(500);
+const atStage = (n) => page.evaluate(async (stage) => {
+  const el = document.querySelector('#treat');
+  el.value = String(stage);
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+  await new Promise((r) => setTimeout(r, 320));
+  const t = await import('/src/core/treatment.js');
+  const s = window.reverbspace.state;
+  return {
+    label: document.querySelector('#treat-out').textContent,
+    cover: t.zoneCoverage(s).wall,
+    rects: t.treatmentZones(s).zones.reduce((k, w) => k + w.length, 0),
+    rt: parseFloat(document.querySelectorAll('#stats dd')[0].textContent),
+  };
+}, n);
+const steps = [];
+for (let i = 0; i <= 6; i++) steps.push(await atStage(i));
+check('every step of the plan is named and puts more up',
+  steps.every((s2, i) => s2.label && (i === 0 || s2.cover > steps[i - 1].cover - 1e-9))
+  && steps[6].cover > steps[1].cover * 3,
+  steps.map((s2) => `${s2.label}: ${(s2.cover * 100).toFixed(0)}% / ${s2.rects} panels`).join(' | '));
+check('the bare room rings longer than the treated one',
+  steps[0].rt > steps[6].rt * 2, `${steps[0].rt}s -> ${steps[6].rt}s`);
+
+// The panels at the reflection points are placed off the performer and the
+// mic, so moving either of them has to move the panels.
+await atStage(1);
+const panelsNow = () => page.evaluate(async () => {
+  const t = await import('/src/core/treatment.js');
+  return JSON.stringify(t.treatmentZones(window.reverbspace.state).zones);
+});
+const beforeMove = await panelsNow();
+await page.evaluate(() => {
+  const rs = window.reverbspace;
+  rs.state.source.z += 1.2;
+  rs.state.mic.z += 1.2;
+  rs.scene.onChange('source');
+});
+await page.waitForTimeout(400);
+check('the reflection panels follow the performer', (await panelsNow()) !== beforeMove);
+
+// And putting everyone back has to actually put them back.
+const places = () => page.evaluate(() => {
+  const s = window.reverbspace.state;
+  return [s.source.x, s.source.z, s.mic.x, s.mic.z, s.mic.height].map((v) => v.toFixed(2)).join(',');
+});
+const moved = await places();
+await page.click('#reset-places');
+await page.waitForTimeout(400);
+const back = await places();
+check('the reset puts the performer and the mic back', back !== moved, `${moved} -> ${back}`);
 
 await browser.close();
 

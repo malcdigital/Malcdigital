@@ -67,9 +67,9 @@ test('a bigger room decays for longer, and treatment shortens it', () => {
     assert.ok(big > small * 1.3, `${id}: scaling up did not lengthen the tail`);
 
     const bare = makeState(id);
-    bare.treatment = { coverage: 0, type: 'rockwool' };
+    bare.treatment = { stage: 0, type: 'rockwool' };
     const treated = makeState(id);
-    treated.treatment = { coverage: 0.9, type: 'rockwool' };
+    treated.treatment = { stage: 6, type: 'rockwool' };
     assert.ok(analyze(treated).decay.midRt < analyze(bare).decay.midRt * 0.75,
       `${id}: soundproofing did not shorten the tail`);
   }
@@ -172,7 +172,7 @@ test('parameter changes do not click, crack or blow up', () => {
       setScale(state, 0.5 + ((block / 8) % 6) * 0.25);
       setMicDistance(state, 0.4 + ((block / 8) % 5) * 2);
       state.mic.id = ['sdc', 'ldc', 'ribbon', 'shotgun', 'xy'][(block / 8) % 5 | 0];
-      state.treatment.coverage = ((block / 8) % 4) * 0.3;
+      state.treatment.stage = (block / 8) % 7;
       clampOccupants(state);
       engine.setDesign(designReverb(analyze(state), FS));
     }

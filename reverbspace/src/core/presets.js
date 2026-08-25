@@ -10,7 +10,7 @@
  * @property {[number,number]} sizeRange           allowed scale factors
  * @property {{floor:string,ceiling:string,walls:string}} surfaces material ids
  * @property {{coverage:number,material:string}|null} seating fraction of floor
- * @property {{coverage:number,type:string}} treatment default wall treatment
+ * @property {{stage:number,type:string}} treatment  how far through the plan
  * @property {number} [pitch]  gable rise above the mean ceiling height, metres
  * @property {{x:number,z:number}} sourceAt        default position, 0..1 of room
  * @property {number} micDistance                  default metres from source
@@ -31,7 +31,7 @@ export const PRESETS = [
     pitch: 0.46,
     surfaces: { floor: 'woodFloor', ceiling: 'woodPanel', walls: 'woodPanel' },
     seating: null,
-    treatment: { coverage: 0.35, type: 'rockwool' },
+    treatment: { stage: 5, type: 'rockwool' },
     sourceAt: { x: 0.5, z: 0.35 },
     micDistance: 0.85,
     palette: '#e8a33d',
@@ -44,7 +44,7 @@ export const PRESETS = [
     sizeRange: [0.4, 2.0],
     surfaces: { floor: 'woodFloor', ceiling: 'plaster', walls: 'woodPanel' },
     seating: { coverage: 0.62, material: 'seatsEmpty' },
-    treatment: { coverage: 0.0, type: 'drapes' },
+    treatment: { stage: 0, type: 'drapes' },
     sourceAt: { x: 0.5, z: 0.16 },
     micDistance: 3.0,
     palette: '#5fb0d6',
@@ -58,7 +58,7 @@ export const PRESETS = [
     surfaces: { floor: 'marble', ceiling: 'stone', walls: 'stone' },
     wallBlend: { material: 'glass', coverage: 0.2 },
     seating: { coverage: 0.38, material: 'seatsEmpty' },
-    treatment: { coverage: 0.0, type: 'drapes' },
+    treatment: { stage: 0, type: 'drapes' },
     sourceAt: { x: 0.5, z: 0.2 },
     micDistance: 5.0,
     palette: '#9b8cd6',
@@ -71,7 +71,7 @@ export const PRESETS = [
     sizeRange: [0.4, 2.2],
     surfaces: { floor: 'woodFloor', ceiling: 'plaster', walls: 'woodPanel' },
     seating: { coverage: 0.7, material: 'seatsFull' },
-    treatment: { coverage: 0.28, type: 'drapes' },
+    treatment: { stage: 5, type: 'drapes' },
     sourceAt: { x: 0.5, z: 0.14 },
     micDistance: 2.2,
     palette: '#e0685f',

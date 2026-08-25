@@ -10,6 +10,7 @@ import {
 } from './materials.js';
 import { PRESETS_BY_ID } from './presets.js';
 import { MICS_BY_ID, polarGain, proximityCurve, directivityFactor, PATTERNS } from './mics.js';
+import { zoneCoverage } from './treatment.js';
 
 export const SPEED_OF_SOUND = 343;
 export const NB = BANDS.length;
@@ -24,31 +25,45 @@ const TAP_FLOOR_DB = -62;
 const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
 
 /** Build the default editable state for a preset. */
+/**
+ * Put the performer and the mic back where the preset starts them.
+ *
+ * Shared with makeState rather than copied into it: a reset that drifts from
+ * the thing it is resetting to is worse than no reset at all. Keeps the mic
+ * model and the treatment, which are choices, and moves only the placement.
+ */
+export function resetPlacement(state) {
+  const p = PRESETS_BY_ID[state.presetId];
+  const { w, d, h } = state.dims;
+  state.source.x = p.sourceAt.x * w;
+  state.source.z = p.sourceAt.z * d;
+  state.source.height = Math.min(1.6, h * 0.5);
+  // The default distance is a fraction of the room, so it still makes sense
+  // after the room has been resized or a wall dragged.
+  const reach = p.micDistance * (d / p.dims.d);
+  state.mic.x = state.source.x;
+  state.mic.z = Math.min(d - 0.3, state.source.z + reach);
+  state.mic.height = Math.min(1.5, h * 0.45);
+  state.mic.aimAtSource = true;
+  aimMic(state);
+  return state;
+}
+
 export function makeState(presetId = 'studio') {
   const p = PRESETS_BY_ID[presetId];
   const dims = { ...p.dims };
-  const src = {
-    x: p.sourceAt.x * dims.w,
-    z: p.sourceAt.z * dims.d,
-    height: Math.min(1.6, dims.h * 0.5),
-  };
   const state = {
     presetId,
     scale: 1,
     dims,
     treatment: { ...p.treatment },
-    source: src,
+    source: { x: 0, z: 0, height: 0 },
     mic: {
-      x: src.x,
-      z: src.z + p.micDistance,
-      height: Math.min(1.5, dims.h * 0.45),
-      azimuth: 0,
-      aimAtSource: true,
+      x: 0, z: 0, height: 0, azimuth: 0, aimAtSource: true,
       id: presetId === 'studio' ? 'ldc' : 'sdc',
     },
   };
-  aimMic(state);
-  return state;
+  return resetPlacement(state);
 }
 
 /** Re-point the mic at the performer, if it is set to track them. */
@@ -134,8 +149,11 @@ export function surfaces(state) {
   const p = PRESETS_BY_ID[state.presetId];
   const { w, d, h } = state.dims;
   const treat = TREATMENTS[state.treatment.type] || TREATMENTS.rockwool;
-  const cov = clamp(state.treatment.coverage, 0, 1);
-  const scatter = (TREATMENT_SCATTER[state.treatment.type] || 0) * cov;
+  // Measured off the placement plan rather than read from a slider: the
+  // rectangles here are the rectangles on the walls, cuts around the window
+  // and the door included, so what you hear is what is hanging there.
+  const cov = zoneCoverage(state);
+  const scatter = (TREATMENT_SCATTER[state.treatment.type] || 0) * cov.wall;
 
   let floorAlpha = MATERIALS[p.surfaces.floor].alpha;
   let floorScatter = 0;
@@ -148,8 +166,8 @@ export function surfaces(state) {
   if (p.wallBlend) {
     wallBase = blendAlpha(wallBase, MATERIALS[p.wallBlend.material].alpha, p.wallBlend.coverage);
   }
-  const wallAlpha = blendAlpha(wallBase, treat.alpha, cov * 0.9);
-  const ceilAlpha = blendAlpha(MATERIALS[p.surfaces.ceiling].alpha, treat.alpha, cov * 0.6);
+  const wallAlpha = blendAlpha(wallBase, treat.alpha, cov.wall);
+  const ceilAlpha = blendAlpha(MATERIALS[p.surfaces.ceiling].alpha, treat.alpha, cov.ceiling);
 
   return {
     floor:   { area: w * d,                      alpha: floorAlpha, scatter: floorScatter },

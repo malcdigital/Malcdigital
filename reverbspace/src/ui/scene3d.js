@@ -485,9 +485,16 @@ export class RoomScene {
   rebuildIfNeeded() {
     if (!this.gl || this.failed) return;
     const s = this.state;
+    // The reflection-point panels are placed off the performer and the mic, so
+    // where those two are standing is part of what the room is. Quantised to
+    // 10 cm: rebuilding every wall on every frame of a drag is a lot of mesh
+    // for a panel that has not visibly moved.
+    const placed = (s.treatment.stage ?? 0) > 0
+      ? [s.source.x, s.source.z, s.mic.x, s.mic.z].map((v) => Math.round(v * 10)).join(',')
+      : '';
     const sig = [
       s.presetId, s.dims.w.toFixed(3), s.dims.d.toFixed(3), s.dims.h.toFixed(3),
-      s.treatment.coverage.toFixed(3), s.treatment.type, s.source.height.toFixed(2),
+      s.treatment.stage, s.treatment.type, s.source.height.toFixed(2), placed,
     ].join('|');
     if (sig !== this.signature) {
       this.signature = sig;

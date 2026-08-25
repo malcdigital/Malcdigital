@@ -8,6 +8,8 @@
 import { MeshBuilder } from './mesh.js';
 import { MATERIALS, TREATMENTS } from '../../core/materials.js';
 import { PRESETS_BY_ID } from '../../core/presets.js';
+import { fittings, sconcesPer } from '../../core/fittings.js';
+import { treatmentZones, wallAxes, cornerChord } from '../../core/treatment.js';
 
 const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
 const lerp = (a, b, t) => a + (b - a) * t;
@@ -67,19 +69,10 @@ export function buildRoom(state) {
   // ---- the surfaces the model actually uses ------------------------------
   // A gable rises `rise` above the mean height and the eaves drop as far
   // below, so the volume matches the flat ceiling the decay is computed from.
-  const rise = preset.pitch ? preset.pitch * (w / preset.dims.w) : 0;
-  const eaves = h - rise;
-  const ridge = h + rise;
-  const win = windowOpening(preset, w, h);
-  // Where the fittings will go. Worked out before the treatment is laid out,
-  // so the treatment can keep out of their way.
-  const lampY = clamp(eaves * 0.58, 1.4, 5.0);
-
-  const doorZ = clamp(d * 0.24, 0.6, d - 1.2);
-  const doorH = Math.min(2.05, h - 0.1);
-  const patchZ = clamp(d * 0.24 + 0.9, 0.5, d - 0.6);
-  const hookY = clamp(h * 0.42, 1.1, 1.9);
-  const sconcesPer = (len) => clamp(Math.round(len / 4.2), 1, 8);
+  // Every fitting comes from the same place the treatment planner reads, so a
+  // panel can be kept off the window without the two disagreeing about where
+  // the window is.
+  const { rise, eaves, ridge, win, doorZ, doorH, patchZ, hookY, lampY } = fittings(state);
 
   out.floor.quad([0, 0, 0], [0, 0, d], [w, 0, d], [w, 0, 0]);
 
@@ -191,201 +184,69 @@ export function buildRoom(state) {
   }
 
   // ---- treatment ---------------------------------------------------------
-  // Each kind is built as the thing it actually is. They absorb differently in
-  // the model, and they should not all look like the same painted rectangle.
-  const cov = clamp(state.treatment.coverage, 0, 1);
+  // Where it goes is decided in core/treatment.js, which the model measures the
+  // same rectangles out of. Here they only get rendered -- in the style of
+  // whatever the material is, because a drape, a wedge tile, a diffuser and a
+  // fabric panel are four different objects and should not all be a rectangle.
   const kind = state.treatment.type;
-  if (cov > 0.02) {
-    const walls = [
-      { id: 0, len: w, at: (u, v) => [u, v, 0], n: [0, 0, 1], from: (u) => [u, 0, 0.02] },
-      { id: 1, len: w, at: (u, v) => [w - u, v, d], n: [0, 0, -1], from: (u) => [w - u, 0, d - 0.02] },
-      { id: 2, len: d, at: (u, v) => [0, v, d - u], n: [1, 0, 0], from: (u) => [0.02, 0, d - u] },
-      { id: 3, len: d, at: (u, v) => [w, v, u], n: [-1, 0, 0], from: (u) => [w - 0.02, 0, u] },
-    ];
+  const plan = treatmentZones(state);
+  const walls = wallAxes(w, d);
+  const railY = Math.min(eaves - 0.12, h * 0.94);
 
-    /*
-     * Nothing hangs over a window, a door, a lamp or the cable run. Each wall
-     * gets a list of rectangles in its own (along, height) coordinates that the
-     * treatment has to keep out of -- which is why panels were previously
-     * sitting across the control-room glass.
-     */
-    const keepClear = walls.map(() => []);
-    const pad2 = 0.13;
-    if (win) {
-      keepClear[0].push({ u0: win.x0 - pad2, u1: win.x1 + pad2, v0: win.y0 - pad2, v1: win.y1 + pad2 });
-      // The coiled cable lives on the same wall, off to one side.
-      if (h > 2.2 && w > 3) {
-        keepClear[0].push({ u0: w * 0.04, u1: w * 0.36, v0: hookY - 0.62, v1: hookY + 0.32 });
+  walls.forEach((wall, i) => {
+    for (const r of plan.zones[i]) {
+      if (kind === 'drapes') {
+        out.drape.curtain(wall.from(r.u0), wall.from(r.u1), 0.008, r.v1, wall.n,
+                          { depth: 0.16, period: 0.32, seed: wall.id * 2.7 + r.u0 });
+        const a = wall.at(r.u0, r.v1 + 0.06), b = wall.at(r.u1, r.v1 + 0.06);
+        out.metal.tube([a[0] + wall.n[0] * 0.09, a[1], a[2] + wall.n[2] * 0.09],
+                       [b[0] + wall.n[0] * 0.09, b[1], b[2] + wall.n[2] * 0.09], 0.018, 8);
+      } else if (kind === 'foam') {
+        tileWedges(out, wall, r);
+      } else if (kind === 'diffusion') {
+        skyline(out, wall, r);
+      } else {
+        fabricPanel(out, wall, r);
       }
     }
-    // Door and patch panel are on x = 0, whose along-axis runs back from z = d.
-    keepClear[2].push({ u0: d - doorZ - 0.7, u1: d - doorZ + 0.7, v0: 0, v1: doorH + 0.2 });
-    keepClear[2].push({ u0: d - patchZ - 0.42, u1: d - patchZ + 0.42, v0: 0.8, v1: 1.65 });
-    // Sconces, mapped from each wall's own parameterisation into this one.
-    // Each fitting wall measures along its own axis; the treatment walls do
-    // not always agree, so map from one to the other.
-    const sconceU = [(a) => a, (a) => w - a, (a) => d - a, (a) => a];
-    walls.forEach((wall, i) => {
-      const n = sconcesPer(wall.len);
-      for (let k = 0; k < n; k++) {
-        const u = sconceU[i](((k + 0.5) / n) * wall.len);
-        keepClear[i].push({ u0: u - 0.34, u1: u + 0.34, v0: lampY - 0.42, v1: lampY + 0.42 });
-      }
-    });
-    // Corners belong to the bass traps.
-    if (kind !== 'drapes' && cov > 0.3) {
-      const r0 = clamp(0.25 + cov * 0.2, 0.25, 0.45) + 0.1;
-      walls.forEach((wall, i) => {
-        keepClear[i].push({ u0: -1, u1: r0, v0: 0, v1: eaves });
-        keepClear[i].push({ u0: wall.len - r0, u1: wall.len + 1, v0: 0, v1: eaves });
-      });
-    }
-    const blocked = (i, u0, u1, v0, v1) => keepClear[i].some(
-      (r) => u0 < r.u1 && u1 > r.u0 && v0 < r.v1 && v1 > r.v0);
-    /** The parts of [u0,u1] left once the reserved spans crossing it are cut out. */
-    const freeRuns = (i, u0, u1, v0, v1) => {
-      const cuts = keepClear[i]
-        .filter((r) => v0 < r.v1 && v1 > r.v0 && r.u1 > u0 && r.u0 < u1)
-        .sort((a, b) => a.u0 - b.u0);
-      const runs = [];
-      let at = u0;
-      for (const c of cuts) {
-        if (c.u0 > at) runs.push([at, Math.min(c.u0, u1)]);
-        at = Math.max(at, c.u1);
-      }
-      if (at < u1) runs.push([at, u1]);
-      return runs.filter(([a, b]) => b - a > 0.4);
-    };
+  });
 
-    if (kind === 'drapes') {
-      // Floor-to-rail curtain across the middle of each wall, on a track.
-      const railY = Math.min(eaves - 0.12, h * 0.94);
-      for (const wall of walls) {
-        const span = wall.len * clamp(cov, 0, 1);
-        if (span < 0.4) continue;
-        const start = (wall.len - span) / 2;
-        for (const [a0, a1] of freeRuns(wall.id, start, start + span, 0.008, railY)) {
-          out.drape.curtain(wall.from(a0), wall.from(a1), 0.008, railY, wall.n,
-                            { depth: 0.16, period: 0.32, seed: wall.id * 2.7 + a0 });
-          const a = wall.at(a0, railY + 0.06), b = wall.at(a1, railY + 0.06);
-          out.metal.tube([a[0] + wall.n[0] * 0.09, a[1], a[2] + wall.n[2] * 0.09],
-                         [b[0] + wall.n[0] * 0.09, b[1], b[2] + wall.n[2] * 0.09], 0.018, 8);
-        }
-      }
-    } else if (kind === 'foam') {
-      // Wedge tiles, in a block centred on ear height where they get used.
-      const tile = 0.3;
-      for (const wall of walls) {
-        const span = wall.len * clamp(cov, 0, 0.98);
-        const cols = Math.floor(span / tile);
-        const rows = Math.max(1, Math.round((eaves * 0.62) / tile));
-        if (cols < 1) continue;
-        const u0 = (wall.len - cols * tile) / 2;
-        const v0 = clamp(eaves * 0.28, 0.3, 1.2);
-        const axis = wall.n[0] !== 0 ? 0 : 2;
-        const sign = wall.n[0] + wall.n[2];
-        for (let c = 0; c < cols; c++) {
-          for (let r = 0; r < rows; r++) {
-            const cu = u0 + (c + 0.5) * tile, cv = v0 + (r + 0.5) * tile;
-            if (blocked(wall.id, cu - tile / 2, cu + tile / 2, cv - tile / 2, cv + tile / 2)) continue;
-            const centre = wall.at(cu, cv);
-            centre[axis] += sign * 0.02;
-            out.foam.wedge(centre, tile * 0.98, 0.055, axis, sign);
-          }
-        }
-      }
-    } else if (kind === 'diffusion') {
-      // Skyline: a grid of wells, each a different depth.
-      const cell = 0.17;
-      for (const wall of walls) {
-        const panels = Math.max(1, Math.round(cov * clamp(wall.len / 3, 1, 3)));
-        const pw = clamp(wall.len / (panels + 1), 0.9, 2.0);
-        for (let q = 0; q < panels; q++) {
-          const centreU = ((q + 1) / (panels + 1)) * wall.len;
-          const cols = Math.max(2, Math.round(pw / cell));
-          const rows = Math.max(2, Math.round((pw * 0.8) / cell));
-          const baseV = clamp(eaves * 0.5, 0.9, 2.4);
-          for (let c = 0; c < cols; c++) {
-            for (let r = 0; r < rows; r++) {
-              const u = centreU - (cols * cell) / 2 + (c + 0.5) * cell;
-              const v = baseV - (rows * cell) / 2 + (r + 0.5) * cell;
-              if (u < 0.1 || u > wall.len - 0.1) continue;
-              if (blocked(wall.id, u - cell / 2, u + cell / 2, v - cell / 2, v + cell / 2)) continue;
-              const depth = 0.03 + hash(wall.id * 91 + c, r) * 0.16;
-              const a = wall.at(u - cell * 0.46, v - cell * 0.46);
-              const b = wall.at(u + cell * 0.46, v + cell * 0.46);
-              const lo = [Math.min(a[0], b[0]), v - cell * 0.46, Math.min(a[2], b[2])];
-              const hi = [Math.max(a[0], b[0]), v + cell * 0.46, Math.max(a[2], b[2])];
-              if (wall.n[0] !== 0) {
-                if (wall.n[0] > 0) hi[0] = lo[0] + depth; else lo[0] = hi[0] - depth;
-              } else if (wall.n[2] > 0) hi[2] = lo[2] + depth; else lo[2] = hi[2] - depth;
-              out.diffuser.box(lo, hi);
-            }
-          }
-        }
-      }
-    } else {
-      // Fabric-wrapped panels, scattered the way a room gets treated in stages.
-      const thick = 0.07;
-      for (const wall of walls) {
-        const cols = Math.max(2, Math.round(wall.len / 1.9));
-        const rows = Math.max(2, Math.round(eaves / 1.7));
-        const order = shuffled(cols * rows, wall.id + 3);
-        const want = Math.round(cols * rows * clamp(cov, 0, 0.92));
-        for (let k = 0; k < want; k++) {
-          const idx = order[k];
-          const c = idx % cols, r = (idx / cols) | 0;
-          const pad = 0.14;
-          const u0 = (c / cols) * wall.len + pad, u1 = ((c + 1) / cols) * wall.len - pad;
-          const v0 = (r / rows) * eaves + pad, v1 = ((r + 1) / rows) * eaves - pad;
-          if (u1 <= u0 || v1 <= v0) continue;
-          if (blocked(wall.id, u0, u1, v0, v1)) continue;
-          const a = wall.at(u0, v0), b = wall.at(u1, v1);
-          const lo = [Math.min(a[0], b[0]), v0, Math.min(a[2], b[2])];
-          const hi = [Math.max(a[0], b[0]), v1, Math.max(a[2], b[2])];
-          if (wall.n[0] !== 0) { lo[0] -= thick * (wall.n[0] > 0 ? 0 : 1); hi[0] += thick * (wall.n[0] > 0 ? 1 : 0); }
-          else { lo[2] -= thick * (wall.n[2] > 0 ? 0 : 1); hi[2] += thick * (wall.n[2] > 0 ? 1 : 0); }
-          (hash(wall.id * 31 + idx, 57) < 0.34 ? out.panelsAlt : out.panels).box(lo, hi);
-        }
-      }
-      // Bass traps straddling the vertical corners, once it is a treated room.
-      if (cov > 0.3) {
-        const r0 = clamp(0.25 + cov * 0.2, 0.25, 0.45);
-        const top = Math.min(eaves - 0.05, h);
-        for (const [cx, cz, sx, sz] of [[0, 0, 1, 1], [w, 0, -1, 1], [w, d, -1, -1], [0, d, 1, -1]]) {
-          const a = [cx + sx * r0, 0.02, cz];
-          const b = [cx, 0.02, cz + sz * r0];
-          const at = [cx + sx * r0, top, cz];
-          const bt = [cx, top, cz + sz * r0];
-          out.panels.quad(a, b, bt, at);
-          out.panels.tri(at, bt, [cx, top, cz]);
-        }
-      }
+  // Bass traps straddling the vertical corners.
+  if (plan.corners) {
+    const r0 = cornerChord(state);
+    const top = Math.min(eaves - 0.05, h);
+    for (const [cx, cz, sx, sz] of [[0, 0, 1, 1], [w, 0, -1, 1], [w, d, -1, -1], [0, d, 1, -1]]) {
+      const a = [cx + sx * r0, 0.02, cz];
+      const b = [cx, 0.02, cz + sz * r0];
+      const at2 = [cx + sx * r0, top, cz];
+      const bt = [cx, top, cz + sz * r0];
+      const mesh = kind === 'drapes' ? out.drape : out.panels;
+      mesh.quad(a, b, bt, at2);
+      mesh.tri(at2, bt, [cx, top, cz]);
     }
+  }
 
-    // Clouds overhead. A curtain does not hang in the middle of the ceiling.
-    if (kind !== 'drapes') {
-      const count = Math.round(cov * Math.max(3, (w * d) / 7));
-      const cw = clamp(Math.min(w, d) * 0.17, 0.8, 2.4);
-      const cd = cw * 0.6;
-      for (let i = 0; i < count; i++) {
-        const cx = lerp(cw, w - cw, hash(i, 101));
-        const cz = lerp(cd, d - cd, hash(i, 211));
-        // Keep clear of the fixtures rather than hanging through them.
-        if (pendants.some(([px, pz]) => Math.hypot(px - cx, pz - cz) < cw * 0.7)) continue;
+  // Clouds overhead, laid on a grid rather than scattered: they hang off the
+  // same joists in life, and a random spread never looked hung, only dropped.
+  if (plan.cloud > 0) {
+    const cw = clamp(Math.min(w, d) * 0.19, 0.9, 2.6);
+    const cd = cw * 0.62;
+    const cols = clamp(Math.round((w * plan.cloud * 1.6) / cw), 1, 4);
+    const rows = clamp(Math.round((d * plan.cloud * 1.6) / (cd * 1.7)), 1, 4);
+    for (let cI = 0; cI < cols; cI++) {
+      for (let rI = 0; rI < rows; rI++) {
+        const cx = ((cI + 0.5) / cols) * w;
+        const cz = ((rI + 0.5) / rows) * d;
+        if (pendants.some(([px, pz]) => Math.hypot(px - cx, pz - cz) < cw * 0.72)) continue;
         const local = rise > 0.01 ? eaves + (1 - Math.abs(cx - w / 2) / (w / 2)) * rise * 2 : h;
-        const drop = lerp(0.2, 0.8, hash(i, 307)) * clamp(h / 3.2, 0.6, 2.6);
+        const drop = clamp(h * 0.14, 0.18, 0.9);
         const y = local - drop - 0.05;
         if (y < state.source.height + 0.35) continue;
-        const rot = (hash(i, 401) - 0.5) * 0.9;
-        out.panels.boxRotY([cx, y, cz], [cw, 0.1, cd], rot);
-        const fr = 0.05;
-        out.trim.boxRotY([cx, y, cz], [cw + fr, 0.045, cd + fr], rot);
-        const ca = Math.cos(rot), sa = Math.sin(rot);
+        out.panels.box([cx - cw / 2, y, cz - cd / 2], [cx + cw / 2, y + 0.1, cz + cd / 2]);
+        out.trim.box([cx - cw / 2 - 0.025, y - 0.022, cz - cd / 2 - 0.025],
+                     [cx + cw / 2 + 0.025, y + 0.023, cz + cd / 2 + 0.025]);
         for (const [ox, oz] of [[-cw / 2 + 0.12, -cd / 2 + 0.1], [cw / 2 - 0.12, cd / 2 - 0.1]]) {
-          const px = cx + ox * ca - oz * sa;
-          const pz = cz + ox * sa + oz * ca;
-          out.metal.tube([px, y + 0.05, pz], [px, local, pz], 0.008, 5, false);
+          out.metal.tube([cx + ox, y + 0.05, cz + oz], [cx + ox, local, cz + oz], 0.008, 5, false);
         }
       }
     }
@@ -534,6 +395,61 @@ export function buildRoom(state) {
   return { batches: out, lights };
 }
 
+/** A fabric-wrapped absorber: the panel, in one of the two fabrics. */
+function fabricPanel(out, wall, r) {
+  const thick = 0.07;
+  const a = wall.at(r.u0, r.v0), b = wall.at(r.u1, r.v1);
+  const lo = [Math.min(a[0], b[0]), r.v0, Math.min(a[2], b[2])];
+  const hi = [Math.max(a[0], b[0]), r.v1, Math.max(a[2], b[2])];
+  if (wall.n[0] !== 0) { lo[0] -= thick * (wall.n[0] > 0 ? 0 : 1); hi[0] += thick * (wall.n[0] > 0 ? 1 : 0); }
+  else { lo[2] -= thick * (wall.n[2] > 0 ? 0 : 1); hi[2] += thick * (wall.n[2] > 0 ? 1 : 0); }
+  // Every so often the second fabric, which is what stops a treated wall
+  // reading as one enormous cushion.
+  const alt = hash(wall.id * 31 + Math.round(r.u0 * 7), Math.round(r.v0 * 11)) < 0.34;
+  (alt ? out.panelsAlt : out.panels).box(lo, hi);
+}
+
+/** Wedge foam, tiled across the rectangle it was given. */
+function tileWedges(out, wall, r) {
+  const tile = 0.3;
+  const cols = Math.max(1, Math.floor((r.u1 - r.u0) / tile));
+  const rows = Math.max(1, Math.floor((r.v1 - r.v0) / tile));
+  const u0 = r.u0 + ((r.u1 - r.u0) - cols * tile) / 2;
+  const v0 = r.v0 + ((r.v1 - r.v0) - rows * tile) / 2;
+  const axis = wall.n[0] !== 0 ? 0 : 2;
+  const sign = wall.n[0] + wall.n[2];
+  for (let c = 0; c < cols; c++) {
+    for (let q = 0; q < rows; q++) {
+      const centre = wall.at(u0 + (c + 0.5) * tile, v0 + (q + 0.5) * tile);
+      centre[axis] += sign * 0.02;
+      out.foam.wedge(centre, tile * 0.98, 0.055, axis, sign);
+    }
+  }
+}
+
+/** A skyline diffuser: a grid of wells, each a different depth. */
+function skyline(out, wall, r) {
+  const cell = 0.17;
+  const cols = Math.max(2, Math.floor((r.u1 - r.u0) / cell));
+  const rows = Math.max(2, Math.floor((r.v1 - r.v0) / cell));
+  const u0 = r.u0 + ((r.u1 - r.u0) - cols * cell) / 2;
+  const v0 = r.v0 + ((r.v1 - r.v0) - rows * cell) / 2;
+  for (let c = 0; c < cols; c++) {
+    for (let q = 0; q < rows; q++) {
+      const u = u0 + (c + 0.5) * cell, v = v0 + (q + 0.5) * cell;
+      const depth = 0.03 + hash(wall.id * 91 + c + Math.round(r.u0 * 5), q) * 0.16;
+      const a = wall.at(u - cell * 0.46, v - cell * 0.46);
+      const b = wall.at(u + cell * 0.46, v + cell * 0.46);
+      const lo = [Math.min(a[0], b[0]), v - cell * 0.46, Math.min(a[2], b[2])];
+      const hi = [Math.max(a[0], b[0]), v + cell * 0.46, Math.max(a[2], b[2])];
+      if (wall.n[0] !== 0) {
+        if (wall.n[0] > 0) hi[0] = lo[0] + depth; else lo[0] = hi[0] - depth;
+      } else if (wall.n[2] > 0) hi[2] = lo[2] + depth; else lo[2] = hi[2] - depth;
+      out.diffuser.box(lo, hi);
+    }
+  }
+}
+
 /**
  * The things that make a room look worked in rather than rendered: an electric
  * piano along one wall, an amp in the corner, a guitar on its stand, a music
@@ -662,14 +578,6 @@ function buildProps(out, preset, w, d, h) {
                         0.045, 0.052, 14, true, true);
     }
   }
-}
-
-/** Where the control-room window sits, or null for a room that has none. */
-function windowOpening(preset, w, h) {
-  if (preset.id !== 'studio' && preset.id !== 'theater') return null;
-  const cw = clamp(w * 0.26, 1.3, 2.9);
-  const cy = clamp(h * 0.46, 1.1, 1.75);
-  return { x0: w / 2 - cw / 2, x1: w / 2 + cw / 2, y0: cy - 0.48, y1: cy + 0.48 };
 }
 
 /**

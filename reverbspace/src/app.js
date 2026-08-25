@@ -3,9 +3,11 @@
 
 import {
   makeState, analyze, setScale, setMicDistance, micDistance, clampOccupants, aimMic,
+  resetPlacement,
 } from './core/acoustics.js';
 import { PRESETS, PRESETS_BY_ID } from './core/presets.js';
 import { TREATMENTS } from './core/materials.js';
+import { STAGES, MAX_STAGE } from './core/treatment.js';
 import { MICS, MICS_BY_ID } from './core/mics.js';
 import { designReverb } from './dsp/designer.js';
 import { AudioEngine, TEST_SOURCES } from './audio/engine.js';
@@ -13,6 +15,7 @@ import { RoomScene } from './ui/scene3d.js';
 import { drawEchogram, drawDecay } from './ui/ir-view.js';
 
 const $ = (id) => document.getElementById(id);
+const clampStage = (v) => Math.max(0, Math.min(MAX_STAGE, Math.round(v ?? 0)));
 const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
 
 const audio = new AudioEngine();
@@ -270,8 +273,10 @@ function syncInputs() {
   $('height').value = state.dims.h;
   $('height-out').textContent = `${state.dims.h.toFixed(1)} m`;
 
-  $('treat').value = state.treatment.coverage;
-  $('treat-out').textContent = `${Math.round(state.treatment.coverage * 100)}%`;
+  const stage = STAGES[clampStage(state.treatment.stage)];
+  $('treat').value = clampStage(state.treatment.stage);
+  $('treat-out').textContent = stage.name;
+  $('treat-stage').textContent = stage.blurb;
   $('treat-type').value = state.treatment.type;
   $('treat-blurb').textContent = TREATMENTS[state.treatment.type].blurb;
 
@@ -306,7 +311,13 @@ function bindControls() {
     dirty = true;
   });
 
-  on('treat', 'input', (e) => { state.treatment.coverage = +e.target.value; syncInputs(); dirty = true; });
+  on('treat', 'input', (e) => { state.treatment.stage = +e.target.value; syncInputs(); dirty = true; });
+  on('reset-places', 'click', () => {
+    resetPlacement(state);
+    scene.lookAtMic();
+    syncInputs();
+    dirty = true;
+  });
   on('treat-type', 'change', (e) => { state.treatment.type = e.target.value; syncInputs(); dirty = true; });
 
   on('src-h', 'input', (e) => { state.source.height = +e.target.value; clampOccupants(state); syncInputs(); dirty = true; });

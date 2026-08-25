@@ -64,6 +64,9 @@ body {
 .btn.on { background: var(--accent); border-color: var(--accent); color: #14161c; font-weight: 600; }
 .btn.danger.on { background: #d05a4e; border-color: #d05a4e; color: #fff; }
 .btn.file { display: inline-flex; align-items: center; }
+/* A control that is an action rather than a value: full width of the
+   group, so it does not read as one more row of the settings above it. */
+.btn.wide { display: block; width: 100%; margin-bottom: 9px; }
 
 .toggle { display: inline-flex; align-items: center; gap: 6px; color: var(--dim); font-size: 12px; cursor: pointer; }
 .toggle input { accent-color: var(--accent); }
