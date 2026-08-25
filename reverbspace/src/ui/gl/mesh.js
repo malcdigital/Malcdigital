@@ -135,6 +135,88 @@ export class MeshBuilder {
     return this;
   }
 
+  /** One vertex with an explicit normal, for surfaces that must shade smoothly. */
+  vert(p, n, t, uv) {
+    this.pos.push(p[0], p[1], p[2]);
+    this.nrm.push(n[0], n[1], n[2]);
+    this.tan.push(t[0], t[1], t[2]);
+    this.uv.push(uv[0], uv[1]);
+    return this.pos.length / 3 - 1;
+  }
+
+  /**
+   * A hanging curtain: fabric bowing away from the wall and back in a run of
+   * pleats, floor to rail.
+   *
+   * Normals come from the fold's own slope rather than per-quad, because flat
+   * shading turns a curtain into corrugated iron -- the soft gradient round
+   * each fold is the whole look.
+   */
+  curtain(from, to, bottom, top, wallNormal, opts = {}) {
+    const depth = opts.depth ?? 0.14;
+    const period = opts.period ?? 0.34;
+    const seed = opts.seed ?? 1;
+    const run = Math.hypot(to[0] - from[0], to[2] - from[2]);
+    if (run < 0.05) return this;
+    const along = [(to[0] - from[0]) / run, 0, (to[2] - from[2]) / run];
+    const n = normalize(wallNormal);
+    // Whole number of folds, so the run starts and ends against the wall.
+    const folds = Math.max(2, Math.round(run / period));
+    const steps = folds * 8;
+    const w = (Math.PI * 2 * folds) / run;
+
+    const cols = [];
+    let arc = 0;
+    let prev = null;
+    for (let i = 0; i <= steps; i++) {
+      const u = (i / steps) * run;
+      // Never negative, so the fabric never passes through the wall.
+      const off = depth * (0.5 - 0.5 * Math.cos(w * u));
+      const slope = depth * 0.5 * w * Math.sin(w * u);
+      const base = [from[0] + along[0] * u, 0, from[2] + along[2] * u];
+      const pos = (y) => [base[0] + n[0] * off, y, base[2] + n[2] * off];
+      const tan = normalize([along[0] + n[0] * slope, 0, along[2] + n[2] * slope]);
+      let nl = normalize(cross(tan, [0, 1, 0]));
+      if (dot(nl, n) < 0) nl = [-nl[0], -nl[1], -nl[2]];
+      if (prev) arc += Math.hypot(pos(0)[0] - prev[0], pos(0)[2] - prev[2]);
+      prev = pos(0);
+      // A little slack at the hem, so it does not read as a printed board.
+      const hem = bottom - (0.5 + 0.5 * Math.sin(u * 3.1 + seed)) * 0.012;
+      cols.push({ lo: pos(hem), hi: pos(top), n: nl, t: tan, arc });
+    }
+
+    for (let i = 0; i < cols.length - 1; i++) {
+      const a = cols[i], b = cols[i + 1];
+      const i0 = this.vert(a.lo, a.n, a.t, [a.arc, 0]);
+      const i1 = this.vert(b.lo, b.n, b.t, [b.arc, 0]);
+      const i2 = this.vert(b.hi, b.n, b.t, [b.arc, top - bottom]);
+      const i3 = this.vert(a.hi, a.n, a.t, [a.arc, top - bottom]);
+      this.idx.push(i0, i1, i2, i0, i2, i3);
+    }
+    return this;
+  }
+
+  /** A wedge tile, as acoustic foam is actually moulded. */
+  wedge(centre, size, height, axis, sign) {
+    const h = size / 2;
+    const out = [0, 0, 0];
+    out[axis] = sign;
+    const corner = (a, b) => {
+      const p = [centre[0], centre[1], centre[2]];
+      const [ia, ib] = axis === 0 ? [1, 2] : axis === 1 ? [0, 2] : [0, 1];
+      p[ia] += a * h;
+      p[ib] += b * h;
+      return p;
+    };
+    const apex = [centre[0] + out[0] * height, centre[1] + out[1] * height, centre[2] + out[2] * height];
+    const c = [corner(-1, -1), corner(1, -1), corner(1, 1), corner(-1, 1)];
+    const order = sign > 0 ? [0, 1, 2, 3] : [3, 2, 1, 0];
+    for (let i = 0; i < 4; i++) {
+      this.tri(c[order[i]], c[order[(i + 1) % 4]], apex);
+    }
+    return this;
+  }
+
   /** Upload to GPU buffers and return something drawable. */
   upload(gl) {
     const vao = gl.createVertexArray();

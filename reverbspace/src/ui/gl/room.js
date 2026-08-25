@@ -50,6 +50,11 @@ export function buildRoom(state) {
     seats: new MeshBuilder(),
     screens: new MeshBuilder(),
     booth: new MeshBuilder(),
+    drape: new MeshBuilder(),
+    foam: new MeshBuilder(),
+    diffuser: new MeshBuilder(),
+    rug: new MeshBuilder(),
+    door: new MeshBuilder(),
     decor: new MeshBuilder(),
   };
   const lights = [];
@@ -125,65 +130,141 @@ export function buildRoom(state) {
     }
   }
 
-  // ---- treatment: coverage the model is using ----------------------------
+  // ---- treatment ---------------------------------------------------------
+  // Each kind is built as the thing it actually is. They absorb differently in
+  // the model, and they should not all look like the same painted rectangle.
   const cov = clamp(state.treatment.coverage, 0, 1);
-  const treat = TREATMENTS[state.treatment.type] || TREATMENTS.rockwool;
+  const kind = state.treatment.type;
   if (cov > 0.02) {
     const walls = [
-      { id: 0, len: w, at: (u, v) => [u, v, 0.02], n: [0, 0, 1] },
-      { id: 1, len: w, at: (u, v) => [w - u, v, d - 0.02], n: [0, 0, -1] },
-      { id: 2, len: d, at: (u, v) => [0.02, v, d - u], n: [1, 0, 0] },
-      { id: 3, len: d, at: (u, v) => [w - 0.02, v, u], n: [-1, 0, 0] },
+      { id: 0, len: w, at: (u, v) => [u, v, 0], n: [0, 0, 1], from: (u) => [u, 0, 0.02] },
+      { id: 1, len: w, at: (u, v) => [w - u, v, d], n: [0, 0, -1], from: (u) => [w - u, 0, d - 0.02] },
+      { id: 2, len: d, at: (u, v) => [0, v, d - u], n: [1, 0, 0], from: (u) => [0.02, 0, d - u] },
+      { id: 3, len: d, at: (u, v) => [w, v, u], n: [-1, 0, 0], from: (u) => [w - 0.02, 0, u] },
     ];
-    const thick = 0.07;
-    for (const wall of walls) {
-      const cols = Math.max(2, Math.round(wall.len / 1.9));
-      const rows = Math.max(2, Math.round(eaves / 1.7));
-      const order = shuffled(cols * rows, wall.id + 3);
-      const want = Math.round(cols * rows * clamp(cov, 0, 0.92));
-      for (let k = 0; k < want; k++) {
-        const idx = order[k];
-        const c = idx % cols, r = (idx / cols) | 0;
-        const pad = 0.14;
-        const u0 = (c / cols) * wall.len + pad, u1 = ((c + 1) / cols) * wall.len - pad;
-        const v0 = (r / rows) * eaves + pad, v1 = ((r + 1) / rows) * eaves - pad;
-        if (u1 <= u0 || v1 <= v0) continue;
-        const a = wall.at(u0, v0), b = wall.at(u1, v1);
-        const lo = [Math.min(a[0], b[0]), v0, Math.min(a[2], b[2])];
-        const hi = [Math.max(a[0], b[0]), v1, Math.max(a[2], b[2])];
-        // Give the slab depth on the axis it stands off the wall.
-        if (wall.n[0] !== 0) { lo[0] -= thick * (wall.n[0] > 0 ? 0 : 1); hi[0] += thick * (wall.n[0] > 0 ? 1 : 0); }
-        else { lo[2] -= thick * (wall.n[2] > 0 ? 0 : 1); hi[2] += thick * (wall.n[2] > 0 ? 1 : 0); }
-        // A third of them in a second tone: nobody hangs a wall of identical
-        // panels, and the variation is what stops it reading as wallpaper.
-        (hash(wall.id * 31 + idx, 57) < 0.34 ? out.panelsAlt : out.panels).box(lo, hi);
+
+    if (kind === 'drapes') {
+      // Floor-to-rail curtain across the middle of each wall, on a track.
+      const railY = Math.min(eaves - 0.12, h * 0.94);
+      for (const wall of walls) {
+        const span = wall.len * clamp(cov, 0, 1);
+        if (span < 0.4) continue;
+        const u0 = (wall.len - span) / 2;
+        out.drape.curtain(wall.from(u0), wall.from(u0 + span), 0.008, railY, wall.n,
+                          { depth: 0.16, period: 0.32, seed: wall.id * 2.7 });
+        const a = wall.at(u0, railY + 0.06), b = wall.at(u0 + span, railY + 0.06);
+        out.metal.tube([a[0] + wall.n[0] * 0.09, a[1], a[2] + wall.n[2] * 0.09],
+                       [b[0] + wall.n[0] * 0.09, b[1], b[2] + wall.n[2] * 0.09], 0.018, 8);
+      }
+    } else if (kind === 'foam') {
+      // Wedge tiles, in a block centred on ear height where they get used.
+      const tile = 0.3;
+      for (const wall of walls) {
+        const span = wall.len * clamp(cov, 0, 0.98);
+        const cols = Math.floor(span / tile);
+        const rows = Math.max(1, Math.round((eaves * 0.62) / tile));
+        if (cols < 1) continue;
+        const u0 = (wall.len - cols * tile) / 2;
+        const v0 = clamp(eaves * 0.28, 0.3, 1.2);
+        const axis = wall.n[0] !== 0 ? 0 : 2;
+        const sign = wall.n[0] + wall.n[2];
+        for (let c = 0; c < cols; c++) {
+          for (let r = 0; r < rows; r++) {
+            const centre = wall.at(u0 + (c + 0.5) * tile, v0 + (r + 0.5) * tile);
+            centre[axis] += sign * 0.02;
+            out.foam.wedge(centre, tile * 0.98, 0.055, axis, sign);
+          }
+        }
+      }
+    } else if (kind === 'diffusion') {
+      // Skyline: a grid of wells, each a different depth.
+      const cell = 0.17;
+      for (const wall of walls) {
+        const panels = Math.max(1, Math.round(cov * clamp(wall.len / 3, 1, 3)));
+        const pw = clamp(wall.len / (panels + 1), 0.9, 2.0);
+        for (let q = 0; q < panels; q++) {
+          const centreU = ((q + 1) / (panels + 1)) * wall.len;
+          const cols = Math.max(2, Math.round(pw / cell));
+          const rows = Math.max(2, Math.round((pw * 0.8) / cell));
+          const baseV = clamp(eaves * 0.5, 0.9, 2.4);
+          for (let c = 0; c < cols; c++) {
+            for (let r = 0; r < rows; r++) {
+              const u = centreU - (cols * cell) / 2 + (c + 0.5) * cell;
+              const v = baseV - (rows * cell) / 2 + (r + 0.5) * cell;
+              if (u < 0.1 || u > wall.len - 0.1) continue;
+              const depth = 0.03 + hash(wall.id * 91 + c, r) * 0.16;
+              const a = wall.at(u - cell * 0.46, v - cell * 0.46);
+              const b = wall.at(u + cell * 0.46, v + cell * 0.46);
+              const lo = [Math.min(a[0], b[0]), v - cell * 0.46, Math.min(a[2], b[2])];
+              const hi = [Math.max(a[0], b[0]), v + cell * 0.46, Math.max(a[2], b[2])];
+              if (wall.n[0] !== 0) {
+                if (wall.n[0] > 0) hi[0] = lo[0] + depth; else lo[0] = hi[0] - depth;
+              } else if (wall.n[2] > 0) hi[2] = lo[2] + depth; else lo[2] = hi[2] - depth;
+              out.diffuser.box(lo, hi);
+            }
+          }
+        }
+      }
+    } else {
+      // Fabric-wrapped panels, scattered the way a room gets treated in stages.
+      const thick = 0.07;
+      for (const wall of walls) {
+        const cols = Math.max(2, Math.round(wall.len / 1.9));
+        const rows = Math.max(2, Math.round(eaves / 1.7));
+        const order = shuffled(cols * rows, wall.id + 3);
+        const want = Math.round(cols * rows * clamp(cov, 0, 0.92));
+        for (let k = 0; k < want; k++) {
+          const idx = order[k];
+          const c = idx % cols, r = (idx / cols) | 0;
+          const pad = 0.14;
+          const u0 = (c / cols) * wall.len + pad, u1 = ((c + 1) / cols) * wall.len - pad;
+          const v0 = (r / rows) * eaves + pad, v1 = ((r + 1) / rows) * eaves - pad;
+          if (u1 <= u0 || v1 <= v0) continue;
+          const a = wall.at(u0, v0), b = wall.at(u1, v1);
+          const lo = [Math.min(a[0], b[0]), v0, Math.min(a[2], b[2])];
+          const hi = [Math.max(a[0], b[0]), v1, Math.max(a[2], b[2])];
+          if (wall.n[0] !== 0) { lo[0] -= thick * (wall.n[0] > 0 ? 0 : 1); hi[0] += thick * (wall.n[0] > 0 ? 1 : 0); }
+          else { lo[2] -= thick * (wall.n[2] > 0 ? 0 : 1); hi[2] += thick * (wall.n[2] > 0 ? 1 : 0); }
+          (hash(wall.id * 31 + idx, 57) < 0.34 ? out.panelsAlt : out.panels).box(lo, hi);
+        }
+      }
+      // Bass traps straddling the vertical corners, once it is a treated room.
+      if (cov > 0.3) {
+        const r0 = clamp(0.25 + cov * 0.2, 0.25, 0.45);
+        const top = Math.min(eaves - 0.05, h);
+        for (const [cx, cz, sx, sz] of [[0, 0, 1, 1], [w, 0, -1, 1], [w, d, -1, -1], [0, d, 1, -1]]) {
+          const a = [cx + sx * r0, 0.02, cz];
+          const b = [cx, 0.02, cz + sz * r0];
+          const at = [cx + sx * r0, top, cz];
+          const bt = [cx, top, cz + sz * r0];
+          out.panels.quad(a, b, bt, at);
+          out.panels.tri(at, bt, [cx, top, cz]);
+        }
       }
     }
 
-    // Clouds hung under the ceiling on chains.
-    const count = Math.round(cov * Math.max(3, (w * d) / 7));
-    const cw = clamp(Math.min(w, d) * 0.17, 0.8, 2.4);
-    const cd = cw * 0.6;
-    for (let i = 0; i < count; i++) {
-      const cx = lerp(cw, w - cw, hash(i, 101));
-      const cz = lerp(cd, d - cd, hash(i, 211));
-      // Hung below whatever the ceiling is doing overhead at that point.
-      const local = rise > 0.01 ? eaves + (1 - Math.abs(cx - w / 2) / (w / 2)) * rise * 2 : h;
-      const drop = lerp(0.2, 0.8, hash(i, 307)) * clamp(h / 3.2, 0.6, 2.6);
-      const y = local - drop - 0.05;
-      if (y < state.source.height + 0.35) continue;
-      const rot = (hash(i, 401) - 0.5) * 0.9;
-      out.panels.boxRotY([cx, y, cz], [cw, 0.1, cd], rot);
-      // A timber frame round the edge, so a cloud reads as a built absorber
-      // rather than a floating slab. Wood, not steel: a cold blue frame reads
-      // wrong against cedar.
-      const fr = 0.05;
-      out.trim.boxRotY([cx, y, cz], [cw + fr, 0.045, cd + fr], rot);
-      const ca = Math.cos(rot), sa = Math.sin(rot);
-      for (const [ox, oz] of [[-cw / 2 + 0.12, -cd / 2 + 0.1], [cw / 2 - 0.12, cd / 2 - 0.1]]) {
-        const px = cx + ox * ca - oz * sa;
-        const pz = cz + ox * sa + oz * ca;
-        out.metal.tube([px, y + 0.05, pz], [px, local, pz], 0.008, 5, false);
+    // Clouds overhead. A curtain does not hang in the middle of the ceiling.
+    if (kind !== 'drapes') {
+      const count = Math.round(cov * Math.max(3, (w * d) / 7));
+      const cw = clamp(Math.min(w, d) * 0.17, 0.8, 2.4);
+      const cd = cw * 0.6;
+      for (let i = 0; i < count; i++) {
+        const cx = lerp(cw, w - cw, hash(i, 101));
+        const cz = lerp(cd, d - cd, hash(i, 211));
+        const local = rise > 0.01 ? eaves + (1 - Math.abs(cx - w / 2) / (w / 2)) * rise * 2 : h;
+        const drop = lerp(0.2, 0.8, hash(i, 307)) * clamp(h / 3.2, 0.6, 2.6);
+        const y = local - drop - 0.05;
+        if (y < state.source.height + 0.35) continue;
+        const rot = (hash(i, 401) - 0.5) * 0.9;
+        out.panels.boxRotY([cx, y, cz], [cw, 0.1, cd], rot);
+        const fr = 0.05;
+        out.trim.boxRotY([cx, y, cz], [cw + fr, 0.045, cd + fr], rot);
+        const ca = Math.cos(rot), sa = Math.sin(rot);
+        for (const [ox, oz] of [[-cw / 2 + 0.12, -cd / 2 + 0.1], [cw / 2 - 0.12, cd / 2 - 0.1]]) {
+          const px = cx + ox * ca - oz * sa;
+          const pz = cz + ox * sa + oz * ca;
+          out.metal.tube([px, y + 0.05, pz], [px, local, pz], 0.008, 5, false);
+        }
       }
     }
   }
@@ -258,7 +339,8 @@ export function buildRoom(state) {
 
   const doorZ = clamp(d * 0.24, 0.6, d - 1.2);
   const doorH = Math.min(2.05, h - 0.1);
-  out.decor.box([0.02, 0, doorZ - 0.45], [0.08, doorH, doorZ + 0.45]);
+  out.door.box([0.02, 0, doorZ - 0.45], [0.08, doorH, doorZ + 0.45]);
+  out.metal.tube([0.09, doorH * 0.5, doorZ + 0.3], [0.16, doorH * 0.5, doorZ + 0.3], 0.018, 6);
   out.trim.box([0, 0, doorZ - 0.56], [0.1, doorH + 0.1, doorZ - 0.45]);
   out.trim.box([0, 0, doorZ + 0.45], [0.1, doorH + 0.1, doorZ + 0.56]);
   out.trim.box([0, doorH, doorZ - 0.56], [0.1, doorH + 0.1, doorZ + 0.56]);
@@ -303,6 +385,29 @@ export function buildRoom(state) {
       }
     }
   }
+  // A rug under the working area, and outlet plates at skirting height.
+  if (w > 3 && d > 3) {
+    const rw = clamp(w * 0.42, 1.4, 3.6), rd = clamp(d * 0.4, 1.2, 3.2);
+    out.rug.box([w / 2 - rw / 2, 0.004, d * 0.55 - rd / 2],
+                [w / 2 + rw / 2, 0.016, d * 0.55 + rd / 2]);
+  }
+  const plateY = clamp(skirt + 0.16, 0.2, 0.5);
+  for (const [px, pz, nx, nz] of [[w * 0.3, 0, 0, 1], [w * 0.72, 0, 0, 1],
+                                  [0, d * 0.6, 1, 0], [w, d * 0.42, -1, 0]]) {
+    const halfA = 0.11, halfB = 0.07;
+    const lo = [px - (nz ? halfA : 0.008), plateY - halfB, pz - (nx ? halfA : 0.008)];
+    const hi = [px + (nz ? halfA : 0.02), plateY + halfB, pz + (nx ? halfA : 0.02)];
+    if (nz) { lo[2] = pz - 0.005; hi[2] = pz + 0.022 * nz; }
+    if (nx) { lo[0] = px - 0.005 + (nx < 0 ? -0.022 : 0); hi[0] = px + (nx > 0 ? 0.022 : 0.005); }
+    out.decor.box(lo, hi);
+  }
+  // A patch panel by the door.
+  const panelZ = clamp(d * 0.24 + 0.9, 0.5, d - 0.6);
+  out.decor.box([0.01, 0.9, panelZ - 0.3], [0.07, 1.55, panelZ + 0.3]);
+  for (let u = 0; u < 4; u++) {
+    out.decor.box([0.07, 1.0 + u * 0.13, panelZ - 0.26], [0.09, 1.08 + u * 0.13, panelZ + 0.26]);
+  }
+
   const sx = 0.75, sz = d - 0.9;
   out.decor.box([sx - 0.19, 0.56, sz - 0.19], [sx + 0.19, 0.62, sz + 0.19]);
   for (const [ox, oz] of [[-0.14, -0.14], [0.14, -0.14], [0.14, 0.14], [-0.14, 0.14]]) {
@@ -355,6 +460,22 @@ function buildControlRoom(out, lights, win, w) {
     out.decor.box([sx - 0.16, deskY + 0.06, deskZ0 + 0.05], [sx + 0.16, deskY + 0.48, deskZ0 + 0.3]);
   }
 
+  // An engineer's chair, and a rack of outboard against the side wall.
+  const chairZ = deskZ1 + 0.62;
+  out.decor.box([cx - 0.26, 0.42, chairZ - 0.26], [cx + 0.26, 0.48, chairZ + 0.26]);
+  out.decor.box([cx - 0.26, 0.48, chairZ + 0.18], [cx + 0.26, 0.94, chairZ + 0.26]);
+  out.decor.tube([cx, 0.04, chairZ], [cx, 0.42, chairZ], 0.035, 8);
+  for (let i = 0; i < 5; i++) {
+    const a = (i / 5) * Math.PI * 2;
+    out.decor.tube([cx, 0.05, chairZ], [cx + Math.sin(a) * 0.26, 0.03, chairZ + Math.cos(a) * 0.26], 0.02, 5);
+  }
+  const rackX = x0 + 0.42;
+  out.decor.box([rackX - 0.3, 0, back + 0.5], [rackX + 0.3, 1.3, back + 1.05]);
+  for (let u = 0; u < 7; u++) {
+    out.decor.box([rackX - 0.27, 0.14 + u * 0.16, back + 0.46],
+                  [rackX + 0.27, 0.26 + u * 0.16, back + 0.5]);
+  }
+
   // Its own light, so the booth reads as lit rather than as a painted panel.
   lights.push({ pos: [cx - 1.1, top - 0.3, back + 1.2], colour: [1.0, 0.9, 0.76], range: 6.5, power: 1.5 });
   lights.push({ pos: [cx + 1.2, top - 0.3, back + 1.2], colour: [1.0, 0.9, 0.76], range: 6.5, power: 1.1 });
@@ -366,6 +487,7 @@ function buildControlRoom(out, lights, win, w) {
 export function buildMic(state) {
   const body = new MeshBuilder();
   const metal = new MeshBuilder();
+  const cable = new MeshBuilder();
   const m = { x: state.mic.x, y: state.mic.height, z: state.mic.z };
   const az = state.mic.azimuth;
   const fx = Math.sin(az), fz = Math.cos(az);
@@ -380,5 +502,31 @@ export function buildMic(state) {
 
   body.tube([m.x - fx * 0.06, m.y, m.z - fz * 0.06], [m.x + fx * 0.04, m.y, m.z + fz * 0.04], 0.027, 14);
   body.tube([m.x + fx * 0.04, m.y, m.z + fz * 0.04], [m.x + fx * 0.1, m.y, m.z + fz * 0.1], 0.034, 14);
-  return { body, metal };
+
+  // Cable: down the stand, then a slack run along the floor to the near wall.
+  const { w, d } = state.dims;
+  cable.tube([m.x - fx * 0.06, m.y - 0.03, m.z - fz * 0.06], [m.x + 0.02, neck, m.z], 0.008, 5, false);
+  cable.tube([m.x + 0.02, neck, m.z], [m.x + 0.03, 0.03, m.z + 0.02], 0.008, 5, false);
+  const toWall = [
+    { p: [m.x, 0.012, 0.05], dist: m.z },
+    { p: [m.x, 0.012, d - 0.05], dist: d - m.z },
+    { p: [0.05, 0.012, m.z], dist: m.x },
+    { p: [w - 0.05, 0.012, m.z], dist: w - m.x },
+  ].sort((a, b) => a.dist - b.dist)[0];
+  let from = [m.x + 0.03, 0.012, m.z + 0.02];
+  const steps = 7;
+  for (let i = 1; i <= steps; i++) {
+    const t = i / steps;
+    // A lazy S rather than a taut line, which is how cable actually lies.
+    const sway = Math.sin(t * Math.PI) * 0.22;
+    const to = [
+      lerp(from[0], toWall.p[0], 1 / (steps - i + 1)) + (i < steps ? sway * 0.3 : 0),
+      0.012,
+      lerp(from[2], toWall.p[2], 1 / (steps - i + 1)) + (i < steps ? sway * 0.3 : 0),
+    ];
+    const end = i === steps ? toWall.p : to;
+    cable.tube(from, end, 0.009, 5, false);
+    from = end;
+  }
+  return { body, metal, cable };
 }

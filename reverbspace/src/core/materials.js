@@ -38,7 +38,7 @@ export const TREATMENTS = {
                blurb: 'Kills highs, leaves the low end alone.' },
   rockwool:  { name: 'Rockwool + traps', alpha: [0.45, 0.75, 0.95, 0.98, 0.95, 0.90], colour: '#c4b89c',
                blurb: 'Broadband. Takes the bass down with everything else.' },
-  drapes:    { name: 'Heavy drapes',    alpha: [0.14, 0.35, 0.55, 0.72, 0.70, 0.65], colour: '#6b3442',
+  drapes:    { name: 'Heavy drapes',    alpha: [0.14, 0.35, 0.55, 0.72, 0.70, 0.65], colour: '#3f3d40',
                blurb: 'Soft mid/high damping, keeps some air.' },
   diffusion: { name: 'Diffusers',       alpha: [0.10, 0.15, 0.20, 0.22, 0.20, 0.18], colour: '#9a8a6a',
                blurb: 'Scatters instead of absorbing. Keeps the tail long but smooths it.' },

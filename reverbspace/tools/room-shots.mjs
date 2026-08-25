@@ -54,4 +54,20 @@ await shot('studio-window', ['studio', 5.4, 4.6, -2.55, 0.0, 1.4]);
 await shot('studio-floor', ['studio', 3.7, 3.0, 2.4, -0.62, 1.0]);
 await shot('hall-inside', ['hall', 13, 30, Math.PI, 0.06, 3]);
 await shot('cathedral-inside', ['cathedral', 12, 50, Math.PI, 0.22, 5]);
+// One view per kind of soundproofing, from the same spot.
+for (const kind of ['drapes', 'foam', 'diffusion', 'rockwool']) {
+  await p.click('.preset[data-id="studio"]');
+  await p.waitForTimeout(500);
+  await p.evaluate((k) => {
+    const sel = document.querySelector('#treat-type');
+    sel.value = k; sel.dispatchEvent(new Event('change', { bubbles: true }));
+    const amt = document.querySelector('#treat');
+    amt.value = '0.8'; amt.dispatchEvent(new Event('input', { bubbles: true }));
+  }, kind);
+  await place(['studio', 3.9, 4.5, -2.5, 0.02, 1.2]);
+  await p.waitForTimeout(800);
+  await p.screenshot({ path: `shots/t-${kind}.png` });
+  console.log('captured treatment', kind);
+}
+
 await b.close();

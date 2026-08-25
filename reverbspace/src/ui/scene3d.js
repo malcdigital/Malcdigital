@@ -441,6 +441,18 @@ export class RoomScene {
     add('ceiling', batches.ceiling, this.materialFor(preset.surfaces.ceiling));
     add('trim', batches.trim, { ...trimTex, uvScale: 1 / 1.1, tint: [1, 1, 1], rough: 0.55, normalStrength: 0.8 });
     add('panels', batches.panels, { ...fabric, uvScale: 1 / 0.55, tint: [1, 1, 1], rough: 0.95, normalStrength: 0.9 });
+    // Velvet: matte, so the shape of each fold does the work rather than a
+    // highlight running down it.
+    add('drape', batches.drape,
+      { ...fabric, uvScale: 1 / 0.75, tint: [1, 1, 1], rough: 0.99, normalStrength: 0.35 });
+    add('foam', batches.foam,
+      { ...fabric, uvScale: 1 / 0.3, tint: [1, 1, 1], rough: 0.99, normalStrength: 0.5 });
+    add('diffuser', batches.diffuser,
+      { ...trimTex, uvScale: 1 / 0.5, tint: [1.15, 1.06, 0.92], rough: 0.5, normalStrength: 0.7 });
+    add('door', batches.door,
+      { ...trimTex, uvScale: 1 / 0.9, tint: [1.1, 1.0, 0.88], rough: 0.45, normalStrength: 0.7 });
+    add('rug', batches.rug,
+      { ...fabric, uvScale: 1 / 1.1, tint: [0.7, 0.55, 0.46], rough: 0.99, normalStrength: 0.6 });
     add('panelsAlt', batches.panelsAlt,
       { ...fabric, uvScale: 1 / 0.5, tint: [0.66, 0.55, 0.5], rough: 0.95, normalStrength: 0.9 });
     add('metal', batches.metal, { ...metalTex, uvScale: 1 / 0.4, tint: [1, 1, 1], rough: 0.3, normalStrength: 0.3 });
@@ -462,12 +474,14 @@ export class RoomScene {
   buildMicBatch() {
     const gl = this.gl;
     if (this.micBatches) for (const b of this.micBatches) b.mesh.dispose();
-    const { body, metal } = buildMic(this.state);
+    const { body, metal, cable } = buildMic(this.state);
     const metalTex = this.texture('metal', () => plasterTexture({ base: '#585f6d', seed: 9, strength: 0.25 }));
     const bodyTex = this.texture('micbody', () => plasterTexture({ base: '#9aa3b4', seed: 29, strength: 0.14 }));
     this.micBatches = [
       { mesh: metal.upload(gl), material: { ...metalTex, uvScale: 1 / 0.3, tint: [1, 1, 1], rough: 0.28, normalStrength: 0.3 } },
       { mesh: body.upload(gl), material: { ...bodyTex, uvScale: 1 / 0.2, tint: [1, 1, 1], rough: 0.18, normalStrength: 0.25 } },
+      { name: 'cable', mesh: cable.upload(gl),
+        material: { ...metalTex, uvScale: 1 / 0.2, tint: [0.2, 0.2, 0.22], rough: 0.75, normalStrength: 0.2 } },
     ];
   }
 
