@@ -62,6 +62,11 @@ uniform highp sampler2DShadow uShadowMap;
 uniform vec3 uSunDir;
 uniform vec3 uSunColor;
 
+// Radiance leaving each of the room's six surfaces: floor, ceiling, -x, +x,
+// -z, +z. Worked out on the CPU as that surface's albedo times the light
+// actually landing on it.
+uniform vec3 uBounce[6];
+
 uniform vec3 uAmbientSky;
 uniform vec3 uAmbientGround;
 uniform vec3 uFogColor;
@@ -106,6 +111,49 @@ float sunVisibility(vec3 p, float ndl) {
   return sum / 9.0;
 }
 
+/*
+ * Indirect light from the room itself.
+ *
+ * Each wall is a rectangle of known radiance, so the light it delivers to a
+ * point is that radiance times the fraction of the hemisphere it covers. For a
+ * rectangle that fraction is exact:
+ *
+ *     omega = 4 asin( ab / sqrt((a^2+h^2)(b^2+h^2)) )
+ *
+ * with a, b its half-extents and h the distance to its plane -- which tends to
+ * the full hemisphere as you approach the surface and falls away as you leave
+ * it. Six of those is the whole of a shoebox's first bounce, and it is why a
+ * timber floor throws warm light back up the walls.
+ */
+vec3 roomBounce(vec3 p, vec3 n) {
+  vec3 dirs[6] = vec3[6](vec3(0.0, 1.0, 0.0), vec3(0.0, -1.0, 0.0),
+                         vec3(1.0, 0.0, 0.0), vec3(-1.0, 0.0, 0.0),
+                         vec3(0.0, 0.0, 1.0), vec3(0.0, 0.0, -1.0));
+  float dist[6];
+  dist[0] = p.y;            dist[1] = uRoom.y - p.y;
+  dist[2] = p.x;            dist[3] = uRoom.x - p.x;
+  dist[4] = p.z;            dist[5] = uRoom.z - p.z;
+  vec2 halfExt[6];
+  halfExt[0] = vec2(uRoom.x, uRoom.z) * 0.5;
+  halfExt[1] = halfExt[0];
+  halfExt[2] = vec2(uRoom.z, uRoom.y) * 0.5;
+  halfExt[3] = halfExt[2];
+  halfExt[4] = vec2(uRoom.x, uRoom.y) * 0.5;
+  halfExt[5] = halfExt[4];
+
+  vec3 sum = vec3(0.0);
+  for (int i = 0; i < 6; i++) {
+    float ndl = max(dot(n, dirs[i]), 0.0);
+    if (ndl <= 0.001) continue;
+    float h = max(dist[i], 0.04);
+    vec2 e = halfExt[i];
+    float t = (e.x * e.y) / sqrt((e.x * e.x + h * h) * (e.y * e.y + h * h));
+    float frac = (2.0 / 3.14159265) * asin(clamp(t, 0.0, 1.0));
+    sum += uBounce[i] * ndl * frac;
+  }
+  return sum;
+}
+
 vec3 tonemap(vec3 x) {
   // Filmic curve: keeps the lamps from clipping to flat white.
   const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
@@ -136,7 +184,8 @@ void main() {
   // Hemisphere ambient: a room is lit from above even where no lamp reaches.
   // Damped in shadow, so a cast shadow reads as a shadow and not a grey patch.
   float up = N.y * 0.5 + 0.5;
-  vec3 lit = albedo * mix(uAmbientGround, uAmbientSky, up) * ao * mix(0.72, 1.0, sun);
+  vec3 fill = mix(uAmbientGround, uAmbientSky, up) + roomBounce(vPos, N);
+  vec3 lit = albedo * fill * ao * mix(0.72, 1.0, sun);
 
   float gloss = 1.0 - clamp(uRough, 0.0, 1.0);
 

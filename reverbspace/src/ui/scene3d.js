@@ -173,6 +173,12 @@ const MAX_LIGHTS = 12;
 const SHADOW_SIZE = 1536;
 /** Where the key light comes from. Down and across, so shadows have a length. */
 const SUN = { x: 0.34, y: -1, z: 0.22 };
+/**
+ * Weight on the first bounce. Held at one: further bounces do exist, and the
+ * series sums to 1/(1-albedo), but leaning on that flattens a bright room --
+ * a marble nave ends up lit evenly from every direction with no contrast left.
+ */
+const BOUNCE = 1.0;
 
 export class RoomScene {
   constructor(canvas, hudCanvas) {
@@ -390,6 +396,73 @@ export class RoomScene {
     return { ...tex, uvScale: 1 / r.tile, tint: [1, 1, 1], rough: r.rough, normalStrength: r.normalStrength };
   }
 
+  /**
+   * Radiance leaving each of the six surfaces, for the shader's bounce term.
+   *
+   * For each one, sample its area, add up the light every fitting actually
+   * delivers there, and multiply by the surface's own albedo. A pendant over a
+   * timber floor gives a warm floor; that warmth is then what fills the room.
+   * Cheap to do here -- the lights and the room only change when the design
+   * does, so this runs on a rebuild rather than per frame.
+   */
+  computeBounce() {
+    const preset = PRESETS_BY_ID[this.state.presetId];
+    const { w, d, h } = this.state.dims;
+    const srgb = (hex) => {
+      const n = parseInt(hex.replace('#', ''), 16);
+      return [(n >> 16) & 255, (n >> 8) & 255, n & 255].map((v) => {
+        const c = v / 255;
+        return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+      });
+    };
+    const albedoFor = (id) => srgb(MATERIALS[id].colour);
+    const floorA = albedoFor(preset.surfaces.floor);
+    const ceilA = albedoFor(preset.surfaces.ceiling);
+    const wallA = albedoFor(preset.surfaces.walls);
+
+    const faces = [
+      { n: [0, 1, 0], a: floorA, at: (u, v) => [u * w, 0, v * d] },
+      { n: [0, -1, 0], a: ceilA, at: (u, v) => [u * w, h, v * d] },
+      { n: [1, 0, 0], a: wallA, at: (u, v) => [0, v * h, u * d] },
+      { n: [-1, 0, 0], a: wallA, at: (u, v) => [w, v * h, u * d] },
+      { n: [0, 0, 1], a: wallA, at: (u, v) => [u * w, v * h, 0] },
+      { n: [0, 0, -1], a: wallA, at: (u, v) => [u * w, v * h, d] },
+    ];
+    const sun = norm(SUN);
+    const out = new Float32Array(18);
+
+    faces.forEach((face, fi) => {
+      let er = 0, eg = 0, eb = 0, samples = 0;
+      for (let i = 0; i < 3; i++) {
+        for (let j = 0; j < 3; j++) {
+          const p = face.at((i + 0.5) / 3, (j + 0.5) / 3);
+          samples++;
+          for (const l of this.lights || []) {
+            const dx = l.pos[0] - p[0], dy = l.pos[1] - p[1], dz = l.pos[2] - p[2];
+            const dist = Math.hypot(dx, dy, dz) || 1e-4;
+            const ndl = (dx * face.n[0] + dy * face.n[1] + dz * face.n[2]) / dist;
+            if (ndl <= 0) continue;
+            // Same falloff the shader uses, or the bounce disagrees with the
+            // light it is supposed to be bouncing.
+            const r = l.range;
+            const atten = (1 / (1 + (dist * dist) / (r * r * 0.16)))
+                        * clamp(1 - dist / r, 0, 1) * l.power * ndl;
+            er += l.colour[0] * atten;
+            eg += l.colour[1] * atten;
+            eb += l.colour[2] * atten;
+          }
+          const sundl = Math.max(0, -(sun.x * face.n[0] + sun.y * face.n[1] + sun.z * face.n[2]));
+          er += 0.30 * sundl; eg += 0.34 * sundl; eb += 0.43 * sundl;
+        }
+      }
+      const k = BOUNCE / samples;
+      out[fi * 3] = face.a[0] * er * k;
+      out[fi * 3 + 1] = face.a[1] * eg * k;
+      out[fi * 3 + 2] = face.a[2] * eb * k;
+    });
+    this.bounce = out;
+  }
+
   /** Rebuild geometry only when something that shapes it actually changed. */
   rebuildIfNeeded() {
     if (!this.gl || this.failed) return;
@@ -401,6 +474,7 @@ export class RoomScene {
     if (sig !== this.signature) {
       this.signature = sig;
       this.buildBatches();
+      this.computeBounce();
       this.shadowDirty = true;
     }
     const msig = [s.mic.x.toFixed(3), s.mic.z.toFixed(3), s.mic.height.toFixed(3),
@@ -603,6 +677,7 @@ export class RoomScene {
       col.set([l.colour[0] * l.power, l.colour[1] * l.power, l.colour[2] * l.power], i * 3);
       rng[i] = l.range;
     });
+    if (this.bounce) gl.uniform3fv(u.uBounce, this.bounce);
     gl.uniform1i(u.uLightCount, lights.length);
     gl.uniform3fv(u.uLightPos, pos);
     gl.uniform3fv(u.uLightColor, col);
@@ -613,8 +688,8 @@ export class RoomScene {
     // surface toward the same orange and the panels lost their own colour.
     // Cool shadow, warm light. The lamps are tungsten; what fills in behind
     // them should not be, or the whole room sits at one temperature.
-    gl.uniform3f(u.uAmbientSky, 0.150, 0.166, 0.205);
-    gl.uniform3f(u.uAmbientGround, 0.078, 0.084, 0.100);
+    gl.uniform3f(u.uAmbientSky, 0.058, 0.066, 0.086);
+    gl.uniform3f(u.uAmbientGround, 0.030, 0.034, 0.044);
     gl.uniform3f(u.uFogColor, dark[0] * 6, dark[1] * 6, dark[2] * 7);
     // Air does not visibly haze a 7 metre room. Keep it near nothing indoors
     // and let it build only across the length of something like a nave.
