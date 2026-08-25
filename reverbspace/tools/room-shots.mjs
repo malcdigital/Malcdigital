@@ -64,7 +64,7 @@ for (const kind of ['drapes', 'foam', 'diffusion', 'rockwool']) {
     const sel = document.querySelector('#treat-type');
     sel.value = k; sel.dispatchEvent(new Event('change', { bubbles: true }));
     const amt = document.querySelector('#treat');
-    amt.value = '0.8'; amt.dispatchEvent(new Event('input', { bubbles: true }));
+    amt.value = '6'; amt.dispatchEvent(new Event('input', { bubbles: true }));
   }, kind);
   await place(['studio', 3.9, 4.5, -2.5, 0.02, 1.2]);
   await p.waitForTimeout(800);

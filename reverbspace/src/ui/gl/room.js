@@ -395,34 +395,58 @@ export function buildRoom(state) {
   return { batches: out, lights };
 }
 
-/** A fabric-wrapped absorber: the panel, in one of the two fabrics. */
-function fabricPanel(out, wall, r) {
-  const thick = 0.07;
+/**
+ * A box standing on a wall, from `into` behind its surface out to `out`.
+ *
+ * The bite into the wall matters: a back face sitting exactly on the wall
+ * plane is coplanar with it, and two coplanar faces fight over every pixel
+ * they share. That flicker along the edge of a panel is what reads as the
+ * panel clipping through the wall. Six millimetres behind and it is simply
+ * hidden, which is what it would be.
+ */
+function onWall(wall, r, depth, into = 0.006) {
   const a = wall.at(r.u0, r.v0), b = wall.at(r.u1, r.v1);
   const lo = [Math.min(a[0], b[0]), r.v0, Math.min(a[2], b[2])];
   const hi = [Math.max(a[0], b[0]), r.v1, Math.max(a[2], b[2])];
-  if (wall.n[0] !== 0) { lo[0] -= thick * (wall.n[0] > 0 ? 0 : 1); hi[0] += thick * (wall.n[0] > 0 ? 1 : 0); }
-  else { lo[2] -= thick * (wall.n[2] > 0 ? 0 : 1); hi[2] += thick * (wall.n[2] > 0 ? 1 : 0); }
+  const ax = wall.n[0] !== 0 ? 0 : 2;
+  const sign = wall.n[ax];
+  if (sign > 0) { lo[ax] -= into; hi[ax] = lo[ax] + into + depth; }
+  else { hi[ax] += into; lo[ax] = hi[ax] - into - depth; }
+  return { lo, hi };
+}
+
+/** A fabric-wrapped absorber: the panel, in one of the two fabrics. */
+function fabricPanel(out, wall, r) {
+  const { lo, hi } = onWall(wall, r, 0.07);
   // Every so often the second fabric, which is what stops a treated wall
   // reading as one enormous cushion.
   const alt = hash(wall.id * 31 + Math.round(r.u0 * 7), Math.round(r.v0 * 11)) < 0.34;
   (alt ? out.panelsAlt : out.panels).box(lo, hi);
 }
 
-/** Wedge foam, tiled across the rectangle it was given. */
+/**
+ * Wedge foam: a backing sheet with pyramids tiled across it.
+ *
+ * The pyramids are laid out on one grid per wall rather than centred inside
+ * whichever rectangle they were handed, so two patches of foam that meet on
+ * the same wall line up instead of arriving half a tile out of step. And they
+ * sit on a backing, because a bare pyramid has no base -- the gaps between
+ * rows were the wall showing through the floor of one.
+ */
 function tileWedges(out, wall, r) {
   const tile = 0.3;
-  const cols = Math.max(1, Math.floor((r.u1 - r.u0) / tile));
-  const rows = Math.max(1, Math.floor((r.v1 - r.v0) / tile));
-  const u0 = r.u0 + ((r.u1 - r.u0) - cols * tile) / 2;
-  const v0 = r.v0 + ((r.v1 - r.v0) - rows * tile) / 2;
+  const base = onWall(wall, r, 0.014);
+  out.foam.box(base.lo, base.hi);
+
   const axis = wall.n[0] !== 0 ? 0 : 2;
-  const sign = wall.n[0] + wall.n[2];
-  for (let c = 0; c < cols; c++) {
-    for (let q = 0; q < rows; q++) {
-      const centre = wall.at(u0 + (c + 0.5) * tile, v0 + (q + 0.5) * tile);
-      centre[axis] += sign * 0.02;
-      out.foam.wedge(centre, tile * 0.98, 0.055, axis, sign);
+  const sign = wall.n[axis];
+  // Whole tiles only, indexed off the wall's own origin so every patch on
+  // this wall shares one grid.
+  for (let c = Math.ceil(r.u0 / tile); (c + 1) * tile <= r.u1; c++) {
+    for (let q = Math.ceil(r.v0 / tile); (q + 1) * tile <= r.v1; q++) {
+      const centre = wall.at((c + 0.5) * tile, (q + 0.5) * tile);
+      centre[axis] += sign * 0.014;
+      out.foam.wedge(centre, tile, 0.055, axis, sign);
     }
   }
 }
@@ -438,13 +462,10 @@ function skyline(out, wall, r) {
     for (let q = 0; q < rows; q++) {
       const u = u0 + (c + 0.5) * cell, v = v0 + (q + 0.5) * cell;
       const depth = 0.03 + hash(wall.id * 91 + c + Math.round(r.u0 * 5), q) * 0.16;
-      const a = wall.at(u - cell * 0.46, v - cell * 0.46);
-      const b = wall.at(u + cell * 0.46, v + cell * 0.46);
-      const lo = [Math.min(a[0], b[0]), v - cell * 0.46, Math.min(a[2], b[2])];
-      const hi = [Math.max(a[0], b[0]), v + cell * 0.46, Math.max(a[2], b[2])];
-      if (wall.n[0] !== 0) {
-        if (wall.n[0] > 0) hi[0] = lo[0] + depth; else lo[0] = hi[0] - depth;
-      } else if (wall.n[2] > 0) hi[2] = lo[2] + depth; else lo[2] = hi[2] - depth;
+      const { lo, hi } = onWall(wall, {
+        u0: u - cell * 0.46, u1: u + cell * 0.46,
+        v0: v - cell * 0.46, v1: v + cell * 0.46,
+      }, depth);
       out.diffuser.box(lo, hi);
     }
   }

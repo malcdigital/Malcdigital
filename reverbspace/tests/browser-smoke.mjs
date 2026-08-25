@@ -254,8 +254,11 @@ check('scattering puts light in the air',
 // A mic held close throws the room out; one set back brings it in.
 const near = await frameAt({ tier: 2, focus: 0.5, pitch: 0 });
 const far = await frameAt({ tier: 2, focus: 4.0, pitch: 0 });
+// Six percent, not fifteen: the lens has been stopped a long way down since
+// this was written, deliberately, and what is being checked is that focus
+// still tracks the mic -- a dead pass reads 1.00, and this reads about 1.11.
 check('the lens focuses on the mic, and a close mic softens the room',
-  far.detail > near.detail * 1.15,
+  far.detail > near.detail * 1.06,
   `detail ${near.detail.toFixed(2)} at 0.5 m -> ${far.detail.toFixed(2)} at 4 m`);
 
 // Each mic is now modelled as the thing it actually is -- a U 87 basket, an

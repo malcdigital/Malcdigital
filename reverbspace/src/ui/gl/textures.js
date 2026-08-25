@@ -232,7 +232,10 @@ export function normalFrom(canvas, strength = 2.2) {
       d[i] = ((-dx / len) * 0.5 + 0.5) * 255;
       d[i + 1] = ((-dy / len) * 0.5 + 0.5) * 255;
       d[i + 2] = (1 / len) * 0.5 * 255 + 127.5;
-      d[i + 3] = 255;
+      // Height rides in the alpha channel. A normal map says which way a
+      // surface tilts but not how far in it sits, and without that a groove
+      // between two boards stays perfectly flat however you look along it.
+      d[i + 3] = lum(x, y) * 255;
     }
   }
   g.putImageData(img, 0, 0);

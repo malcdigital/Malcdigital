@@ -186,17 +186,25 @@ function recipeFor(id) {
   const mat = MATERIALS[id];
   const base = mat.colour;
   switch (mat.pattern) {
+    // `depth` is the relief in metres: how far the grooves actually sink in.
+    // A V-groove between two boards is a few millimetres, mortar between
+    // stones rather more, and a plastered wall as near to nothing as makes no
+    // difference -- but not quite nothing, or it looks like paper.
     case 'planks':
       return { kind: 'wood', base, boards: 4, tile: id === 'woodFloor' ? 0.68 : 0.92,
-               rough: 0.62, normalStrength: 1.0 };
+               rough: 0.62, normalStrength: 1.0, depth: 0.005 };
     case 'blocks':
-      return { kind: 'stone', base, rows: 6, tile: 3.2, rough: 0.9, normalStrength: 1.25 };
+      return { kind: 'stone', base, rows: 6, tile: 3.2, rough: 0.9, normalStrength: 1.25,
+               depth: 0.016 };
     case 'bricks':
-      return { kind: 'stone', base, rows: 12, tile: 1.1, rough: 0.92, normalStrength: 1.3 };
+      return { kind: 'stone', base, rows: 12, tile: 1.1, rough: 0.92, normalStrength: 1.3,
+               depth: 0.010 };
     case 'tiles':
-      return { kind: 'stone', base, rows: 3, tile: 3.1, rough: 0.35, normalStrength: 0.5 };
+      return { kind: 'stone', base, rows: 3, tile: 3.1, rough: 0.35, normalStrength: 0.5,
+               depth: 0.004 };
     default:
-      return { kind: 'plaster', base, tile: 2.6, rough: 0.85, normalStrength: 0.5 };
+      return { kind: 'plaster', base, tile: 2.6, rough: 0.85, normalStrength: 0.5,
+               depth: 0.0015 };
   }
 }
 
@@ -442,7 +450,8 @@ export class RoomScene {
       if (r.kind === 'stone') return stoneTexture({ base: r.base, rows: r.rows, seed: id.length * 7 });
       return plasterTexture({ base: r.base, seed: id.length * 5 });
     });
-    return { ...tex, uvScale: 1 / r.tile, tint: [1, 1, 1], rough: r.rough, normalStrength: r.normalStrength };
+    return { ...tex, uvScale: 1 / r.tile, tint: [1, 1, 1], rough: r.rough,
+             normalStrength: r.normalStrength, depth: r.depth };
   }
 
   /**
@@ -572,7 +581,8 @@ export class RoomScene {
     add('walls', batches.walls, this.materialFor(preset.surfaces.walls));
     add('floor', batches.floor, this.materialFor(preset.surfaces.floor));
     add('ceiling', batches.ceiling, this.materialFor(preset.surfaces.ceiling));
-    add('trim', batches.trim, { ...trimTex, uvScale: 1 / 1.1, tint: [1, 1, 1], rough: 0.55, normalStrength: 0.8 });
+    add('trim', batches.trim,
+      { ...trimTex, uvScale: 1 / 1.1, tint: [1, 1, 1], rough: 0.55, normalStrength: 0.8, depth: 0.004 });
     add('panels', batches.panels, { ...fabric, uvScale: 1 / 0.55, tint: [1, 1, 1], rough: 0.95, normalStrength: 0.5 });
     // Velvet: matte, so the shape of each fold does the work rather than a
     // highlight running down it.
@@ -877,6 +887,9 @@ export class RoomScene {
       gl.uniform3fv(u.uTint, m.tint || [1, 1, 1]);
       gl.uniform1f(u.uRough, m.rough ?? 0.7);
       gl.uniform1f(u.uMetal, m.metal ?? 0);
+      // Twelve extra texture reads a pixel. It is the first thing to go on
+      // a machine that cannot keep up, along with the scattering.
+      gl.uniform1f(u.uDepth, this.tier >= 2 ? (m.depth ?? 0) : 0);
       gl.uniform1f(u.uNormalStrength, m.normalStrength ?? 1);
       gl.uniform3fv(u.uEmissive, m.emissive || [0, 0, 0]);
       gl.bindVertexArray(batch.mesh.vao);
@@ -934,8 +947,8 @@ export class RoomScene {
         // and this is a tool you have to see the room in: it is the shape of
         // the falloff that says "lens", not the amount of it. A mic held at
         // 0.6 m still softens the far wall; one set back brings it in.
-        cocScale: 3.0 * (this.h / 800) * this.dpr,
-        maxCoc: clamp(this.h / 190, 2, 6) * this.dpr,
+        cocScale: 1.5 * (this.h / 800) * this.dpr,
+        maxCoc: clamp(this.h / 300, 1.5, 4) * this.dpr,
       });
     }
   }
@@ -1357,7 +1370,9 @@ export class RoomScene {
 
     canvas.addEventListener('wheel', (e) => {
       if (this.cam.mode === 'first') {
-        const step = -Math.sign(e.deltaY) * 0.45;
+        // A notch of wheel is about a foot. Half what it was, which was
+        // enough to overshoot the spot you were listening for.
+        const step = -Math.sign(e.deltaY) * 0.22;
         this.state.source.x += Math.sin(this.cam.yaw) * step;
         this.state.source.z += Math.cos(this.cam.yaw) * step;
         this.onChange('source');

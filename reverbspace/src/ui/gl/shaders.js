@@ -46,6 +46,8 @@ uniform vec3 uTint;
 uniform float uRough;
 uniform float uMetal;
 uniform float uNormalStrength;
+// How far the surface is relieved, in metres. Zero turns the march off.
+uniform float uDepth;
 uniform vec3 uEmissive;
 uniform float uAlpha;
 
@@ -217,6 +219,47 @@ vec3 fresnelRough(vec3 f0, float ndv, float rough) {
   return f0 + (t - f0) * pow(clamp(1.0 - ndv, 0.0, 1.0), 5.0);
 }
 
+/*
+ * Parallax occlusion: where the eye really lands on a relieved surface.
+ *
+ * A normal map tilts the shading but never moves anything, so cladding stays
+ * dead flat -- the grooves between boards do not slide as you pass them, do
+ * not narrow when you look along the wall, and never hide anything behind an
+ * edge. Those three are most of what tells you a surface has depth.
+ *
+ * March the view ray through the height field, in the surface's own tangent
+ * frame, until it goes under: the first step below the surface brackets the
+ * hit, and one linear pass between that step and the one before it lands
+ * close enough. Height is in the normal map's alpha.
+ */
+vec2 parallaxUv(vec2 uv, vec3 V, vec3 T, vec3 B, vec3 N) {
+  vec3 vt = vec3(dot(V, T), dot(V, B), dot(V, N));
+  // Head on there is nothing to see, and at a hard graze the offset runs away
+  // with itself, so fade the whole thing out at both ends.
+  float grazing = clamp(vt.z, 0.0, 1.0);
+  if (grazing < 0.08) return uv;
+  float amount = uDepth * uUvScale.x * smoothstep(0.08, 0.35, grazing);
+  vec2 span = (vt.xy / vt.z) * amount;
+
+  const int STEPS = 12;
+  const float layer = 1.0 / float(STEPS);
+  vec2 stride = span * layer;
+  vec2 here = uv;
+  float depth = 0.0;
+  float under = 1.0 - texture(uNormalMap, here).a;
+  for (int i = 0; i < STEPS; i++) {
+    if (depth >= under) break;
+    here -= stride;
+    depth += layer;
+    under = 1.0 - texture(uNormalMap, here).a;
+  }
+  vec2 back = here + stride;
+  float afterGap = under - depth;
+  float beforeGap = (1.0 - texture(uNormalMap, back).a) - (depth - layer);
+  float w = afterGap / max(afterGap - beforeGap, 1e-4);
+  return mix(here, back, clamp(w, 0.0, 1.0));
+}
+
 /** One light's specular contribution, clamped off the firefly. */
 vec3 specularLobe(vec3 N, vec3 V, vec3 L, vec3 f0, float a, float ndl, float ndv) {
   vec3 H = normalize(L + V);
@@ -227,18 +270,21 @@ vec3 specularLobe(vec3 N, vec3 V, vec3 L, vec3 f0, float a, float ndl, float ndv
 }
 
 void main() {
-  vec3 albedo = texture(uAlbedo, vUv * uUvScale).rgb * uTint;
-
   vec3 N = normalize(vNormal);
+  vec3 V = normalize(uEye - vPos);
+  vec2 uv = vUv * uUvScale;
+
+  vec3 T = normalize(vTangent - N * dot(N, vTangent));
+  vec3 B = cross(N, T);
+  if (uDepth > 0.0) uv = parallaxUv(uv, V, T, B, N);
+
+  vec3 albedo = texture(uAlbedo, uv).rgb * uTint;
   if (uNormalStrength > 0.001) {
-    vec3 T = normalize(vTangent - N * dot(N, vTangent));
-    vec3 B = cross(N, T);
-    vec3 nm = texture(uNormalMap, vUv * uUvScale).rgb * 2.0 - 1.0;
+    vec3 nm = texture(uNormalMap, uv).rgb * 2.0 - 1.0;
     nm.xy *= uNormalStrength;
     N = normalize(mat3(T, B, N) * normalize(nm));
   }
 
-  vec3 V = normalize(uEye - vPos);
   float ao = roomAo(vPos, normalize(vNormal));
 
   // Metals have no diffuse and tint their own reflection; everything else

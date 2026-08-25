@@ -301,7 +301,10 @@ out vec4 fragColor;
 void main() {
   // Under about a pixel of confusion there is nothing to see, and mixing in a
   // half-resolution buffer there would only cost sharpness for no blur.
-  float t = smoothstep(0.6, 2.2, cocPx(vUv));
+  // Nothing under a pixel and a half of confusion is worth softening: it is
+  // a room you have to be able to look at, and the falloff reads as a lens
+  // long before it reads as blur.
+  float t = smoothstep(1.5, 4.0, cocPx(vUv));
   fragColor = vec4(mix(texture(uScene, vUv).rgb, texture(uBlurred, vUv).rgb, t), 1.0);
 }
 `;
