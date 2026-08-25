@@ -170,6 +170,86 @@ const shotgun = await drrFor('shotgun');
 check('a shotgun rejects more room than an omni',
   parseFloat(shotgun) > parseFloat(omni) + 3, `omni ${omni}, shotgun ${shotgun}`);
 
+// The scattering and lens passes are easy to break silently: a uniform that
+// stops being uploaded leaves a shader that still compiles and contributes
+// nothing. Pin each one down by what it does to the picture.
+//
+// Two figures, because the two passes show up in different places. Haze is a
+// lift in overall brightness and pools under the fittings; a lens takes away
+// fine detail on whatever is not at the focus distance. Detail has to be
+// measured at native resolution -- scaling a frame down low-passes it harder
+// than any lens does, and then sharp and soft measure the same.
+await page.click('.preset[data-id="studio"]');
+await page.waitForTimeout(600);
+const frameAt = (opts) => page.evaluate(async (o) => {
+  const rs = window.reverbspace.scene;
+  rs.tier = o.tier;
+  rs.budget = () => {};        // hold the tier: it would move back within a second
+  rs.cam.pitch = o.pitch;
+  const s = window.reverbspace.state;
+  s.mic.x = s.source.x + Math.sin(rs.cam.yaw) * o.focus;
+  s.mic.z = s.source.z + Math.cos(rs.cam.yaw) * o.focus;
+  rs.onChange('mic');
+  await new Promise((r) => setTimeout(r, 500));
+
+  const c = document.querySelector('#room');
+  const read = (sx, sy, sw, sh, dw, dh) => {
+    const off = document.createElement('canvas');
+    off.width = dw; off.height = dh;
+    const g = off.getContext('2d');
+    g.drawImage(c, sx, sy, sw, sh, 0, 0, dw, dh);
+    return { px: g.getImageData(0, 0, dw, dh).data, w: dw, h: dh };
+  };
+  const lum = (px, i) => 0.2126 * px[i] + 0.7152 * px[i + 1] + 0.0722 * px[i + 2];
+
+  // A grid rather than one number for the frame: haze is not spread evenly,
+  // it collects under the fittings, and an average over the whole picture
+  // dilutes a cone that is obvious to look at down to a percent or two.
+  const GX = 8, GY = 5, C = 16;
+  const whole = read(0, 0, c.width, c.height, GX * C, GY * C);
+  const cells = new Array(GX * GY).fill(0);
+  for (let y = 0; y < GY * C; y++) {
+    for (let x = 0; x < GX * C; x++) {
+      cells[Math.floor(y / C) * GX + Math.floor(x / C)]
+        += lum(whole.px, (y * GX * C + x) * 4) / (C * C);
+    }
+  }
+
+  const W = Math.min(360, c.width), H = Math.min(140, c.height);
+  const strip = read(Math.round((c.width - W) / 2), Math.round(c.height * 0.12), W, H, W, H);
+  let edge = 0, n = 0;
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W - 1; x++) {
+      const i = (y * W + x) * 4;
+      edge += Math.abs(lum(strip.px, i + 4) - lum(strip.px, i));
+      n++;
+    }
+  }
+  return { cells, detail: edge / n };
+}, opts);
+
+// Level, down the length of the room, with the fittings and the air under
+// them in frame. Pointing up at a shade is the wrong test: it shortens every
+// view ray to the ceiling and there is nothing left to scatter through.
+const noVolume = await frameAt({ tier: 1, focus: 1.0, pitch: 0.05 });
+const withVolume = await frameAt({ tier: 2, focus: 1.0, pitch: 0.05 });
+// The mean of the six patches that gained most, not the single best one.
+// The two frames carry different film grain, and a maximum over forty cells
+// picks the tail of that noise as readily as it picks the signal.
+const lifts = withVolume.cells
+  .map((v, i) => (v - noVolume.cells[i]) / Math.max(noVolume.cells[i], 1))
+  .sort((a, b) => b - a);
+const lift = lifts.slice(0, 6).reduce((a, b) => a + b, 0) / 6;
+check('scattering puts light in the air',
+  lift > 0.015, `brightest patches +${(lift * 100).toFixed(1)}%`);
+
+// A mic held close throws the room out; one set back brings it in.
+const near = await frameAt({ tier: 2, focus: 0.5, pitch: 0 });
+const far = await frameAt({ tier: 2, focus: 4.0, pitch: 0 });
+check('the lens focuses on the mic, and a close mic softens the room',
+  far.detail > near.detail * 1.15,
+  `detail ${near.detail.toFixed(2)} at 0.5 m -> ${far.detail.toFixed(2)} at 4 m`);
+
 await browser.close();
 
 const failed = results.filter((r) => !r.pass);

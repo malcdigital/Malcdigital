@@ -125,14 +125,197 @@ void main() {
 }
 `;
 
+const VOLUME_FRAG = `#version 300 es
+precision highp float;
+
+/*
+ * In-scattering: what the air between you and the wall does with the light.
+ *
+ * The room was drawn as though it were a vacuum -- every photon travelled from
+ * a lamp to a surface to the eye and none of it hit anything on the way. Real
+ * air scatters, which is why a shaded pendant hangs in a visible cone and why
+ * the far end of a long room goes soft. This marches the view ray to whatever
+ * the depth buffer says it hit and accumulates that scattering.
+ *
+ * Quarter resolution and twenty steps: in-scattering is smooth by nature, so
+ * the cost belongs in the light loop rather than in pixels.
+ */
+
+#define MAX_V_LIGHTS 6
+#define STEPS 16
+const float PI = 3.14159265359;
+
+in vec2 vUv;
+uniform sampler2D uDepth;
+uniform mat4 uInvViewProj;
+uniform vec3 uEye;
+uniform int uCount;
+uniform vec3 uPos[MAX_V_LIGHTS];
+uniform vec3 uColor[MAX_V_LIGHTS];
+uniform float uRange[MAX_V_LIGHTS];
+uniform vec3 uDir[MAX_V_LIGHTS];
+uniform vec2 uCone[MAX_V_LIGHTS];
+uniform float uDensity;
+uniform float uMaxDist;
+uniform float uSeed;
+out vec4 fragColor;
+
+vec3 worldAt(vec2 uv, float z) {
+  vec4 clip = vec4(uv * 2.0 - 1.0, z * 2.0 - 1.0, 1.0);
+  vec4 p = uInvViewProj * clip;
+  return p.xyz / p.w;
+}
+
+float hash12(vec2 p) {
+  vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+  p3 += dot(p3, p3.yzx + 33.33);
+  return fract((p3.x + p3.y) * p3.z);
+}
+
+void main() {
+  float depth = texture(uDepth, vUv).r;
+  vec3 ray = worldAt(vUv, min(depth, 0.99999)) - uEye;
+  float len = min(length(ray), uMaxDist);
+  vec3 dir = ray / max(length(ray), 1e-4);
+
+  // Dither the first step, or twenty slices read as twenty bands.
+  float jitter = hash12(vUv * 1024.0 + uSeed);
+  float dt = len / float(STEPS);
+  vec3 acc = vec3(0.0);
+
+  for (int i = 0; i < STEPS; i++) {
+    vec3 p = uEye + dir * ((float(i) + jitter) * dt);
+    for (int k = 0; k < MAX_V_LIGHTS; k++) {
+      if (k >= uCount) break;
+      vec3 toL = uPos[k] - p;
+      float dist = length(toL);
+      vec3 L = toL / max(dist, 1e-3);
+      float r = uRange[k];
+      float atten = 1.0 / (1.0 + (dist * dist) / (r * r * 0.16));
+      atten *= clamp(1.0 - dist / r, 0.0, 1.0);
+      atten *= smoothstep(uCone[k].x, uCone[k].y, dot(-L, uDir[k]));
+      if (atten <= 0.0) continue;
+      // Henyey-Greenstein. Air scatters forward, so a lamp you are looking
+      // toward hazes several times as hard as the same lamp off to one side --
+      // which is the whole reason a beam is something you can see.
+      float g = 0.55;
+      float cosT = dot(dir, -L);
+      float denom = 1.0 + g * g - 2.0 * g * cosT;
+      float hg = (1.0 - g * g) / (4.0 * PI * denom * sqrt(max(denom, 1e-4)));
+      acc += uColor[k] * atten * hg;
+    }
+  }
+  fragColor = vec4(acc * uDensity * dt, 1.0);
+}
+`;
+
+const DOF_HEAD = `
+/*
+ * Depth of field, from the thin-lens equation rather than a blur ramp.
+ *
+ * Nothing else in the frame said "camera". A lens wide enough to shoot a room
+ * this dim has a few tens of centimetres of usable depth, so a mic a metre
+ * away and a wall five metres behind it cannot both be sharp -- and the eye
+ * knows that even when it cannot say why. The circle of confusion of a thin
+ * lens goes as |1/z - 1/focus|, which is the whole of the shape here; the
+ * scale is the aperture. Focus sits on the mic, because that is the subject.
+ *
+ * The blur runs at half resolution and is mixed back into the sharp frame by
+ * how far out of focus each pixel is. Gathering at full resolution cost more
+ * than everything else in the chain put together, for detail that is blurred
+ * away by definition.
+ */
+uniform sampler2D uDepth;
+uniform mat4 uInvProj;
+uniform float uFocus;
+uniform float uCocScale;
+uniform float uMaxCoc;
+
+/** Distance along the view axis. Independent of x and y under a perspective. */
+float viewZ(vec2 uv) {
+  vec4 v = uInvProj * vec4(0.0, 0.0, texture(uDepth, uv).r * 2.0 - 1.0, 1.0);
+  return -v.z / v.w;
+}
+
+/** Circle of confusion at this pixel, in full-resolution pixels. */
+float cocPx(vec2 uv) {
+  float z = max(viewZ(uv), 0.05);
+  return clamp(uCocScale * abs(1.0 / z - 1.0 / uFocus), 0.0, uMaxCoc);
+}
+`;
+
+const DOF_DOWN_FRAG = `#version 300 es
+precision highp float;
+in vec2 vUv;
+uniform sampler2D uScene;
+out vec4 fragColor;
+` + DOF_HEAD + `
+void main() {
+  // Colour and how far out of focus it is, carried together so the gather
+  // below needs one fetch per tap instead of a depth read and a matrix.
+  fragColor = vec4(texture(uScene, vUv).rgb, cocPx(vUv) / max(uMaxCoc, 1e-3));
+}
+`;
+
+const DOF_GATHER_FRAG = `#version 300 es
+precision highp float;
+#define TAPS 16
+in vec2 vUv;
+uniform sampler2D uTex;
+uniform vec2 uSize;
+uniform float uMaxCoc;
+out vec4 fragColor;
+
+void main() {
+  // Half-resolution pixels, so the radius is half what it is on screen.
+  float radius = uMaxCoc * 0.5;
+  vec2 texel = 1.0 / uSize;
+  vec4 here = texture(uTex, vUv);
+  vec3 sum = here.rgb;
+  float wsum = 1.0;
+
+  for (int i = 0; i < TAPS; i++) {
+    // Golden angle: an even disc without a ring pattern to alias against.
+    float r = sqrt((float(i) + 0.5) / float(TAPS)) * radius;
+    float ang = float(i) * 2.39996323;
+    vec2 uv = vUv + vec2(cos(ang), sin(ang)) * r * texel;
+    vec4 s = texture(uTex, uv);
+    // A sample lands on this pixel only if its own circle reaches this far,
+    // which is what stops a sharp background smearing over a soft foreground.
+    float reach = max(s.a, here.a) * radius;
+    float w = smoothstep(r - 0.75, r + 0.75, reach);
+    sum += s.rgb * w;
+    wsum += w;
+  }
+  fragColor = vec4(sum / wsum, here.a);
+}
+`;
+
+const DOF_COMBINE_FRAG = `#version 300 es
+precision highp float;
+in vec2 vUv;
+uniform sampler2D uScene;
+uniform sampler2D uBlurred;
+out vec4 fragColor;
+` + DOF_HEAD + `
+void main() {
+  // Under about a pixel of confusion there is nothing to see, and mixing in a
+  // half-resolution buffer there would only cost sharpness for no blur.
+  float t = smoothstep(0.6, 2.2, cocPx(vUv));
+  fragColor = vec4(mix(texture(uScene, vUv).rgb, texture(uBlurred, vUv).rgb, t), 1.0);
+}
+`;
+
 const COMPOSITE_FRAG = `#version 300 es
 precision highp float;
 in vec2 vUv;
 uniform sampler2D uScene;
 uniform sampler2D uAo;
 uniform sampler2D uBloom;
+uniform sampler2D uVolume;
 uniform float uExposure;
 uniform float uBloomAmount;
+uniform float uVolumeAmount;
 uniform float uVignette;
 uniform float uGrain;
 uniform float uSeed;
@@ -157,6 +340,9 @@ void main() {
   float lum = dot(c, vec3(0.2126, 0.7152, 0.0722));
   c *= mix(ao, 1.0, clamp(lum * 1.6, 0.0, 0.85));
   c += texture(uBloom, vUv).rgb * uBloomAmount;
+  // Scattered light is added, not mixed: haze does not take anything away
+  // from what is behind it, it puts light in front of it.
+  c += texture(uVolume, vUv).rgb * uVolumeAmount;
 
   vec2 d = vUv - 0.5;
   c *= 1.0 - uVignette * dot(d, d) * 1.9;
@@ -213,6 +399,10 @@ export class PostChain {
     this.ssao = compile(gl, FULLSCREEN_VERT, SSAO_FRAG);
     this.blur = compile(gl, FULLSCREEN_VERT, BLUR_FRAG);
     this.bright = compile(gl, FULLSCREEN_VERT, BRIGHT_FRAG);
+    this.volume = compile(gl, FULLSCREEN_VERT, VOLUME_FRAG);
+    this.dofDown = compile(gl, FULLSCREEN_VERT, DOF_DOWN_FRAG);
+    this.dofGather = compile(gl, FULLSCREEN_VERT, DOF_GATHER_FRAG);
+    this.dofCombine = compile(gl, FULLSCREEN_VERT, DOF_COMBINE_FRAG);
     this.composite = compile(gl, FULLSCREEN_VERT, COMPOSITE_FRAG);
     this.empty = gl.createVertexArray();
     this.width = 0;
@@ -247,15 +437,20 @@ export class PostChain {
     };
 
     this.scene = target(w, h, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT, gl.LINEAR, true);
+    this.focused = target(w, h, gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT, gl.LINEAR, false);
+    this.dofA = target(half[0], half[1], gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT, gl.LINEAR, false);
+    this.dofB = target(half[0], half[1], gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT, gl.LINEAR, false);
     this.aoA = target(half[0], half[1], gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, gl.LINEAR, false);
     this.aoB = target(half[0], half[1], gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, gl.LINEAR, false);
     this.bloomA = target(quarter[0], quarter[1], gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT, gl.LINEAR, false);
     this.bloomB = target(quarter[0], quarter[1], gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT, gl.LINEAR, false);
+    this.volA = target(quarter[0], quarter[1], gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT, gl.LINEAR, false);
+    this.volB = target(quarter[0], quarter[1], gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT, gl.LINEAR, false);
   }
 
   dispose() {
     const gl = this.gl;
-    for (const key of ['scene', 'aoA', 'aoB', 'bloomA', 'bloomB']) {
+    for (const key of ['scene', 'focused', 'dofA', 'dofB', 'aoA', 'aoB', 'bloomA', 'bloomB', 'volA', 'volB']) {
       const t = this[key];
       if (!t) continue;
       gl.deleteFramebuffer(t.fb);
@@ -325,8 +520,71 @@ export class PostChain {
       }
     }
 
-    this.draw(this.bloomA, this.bright, (u) => {
+    // Below a couple of pixels of confusion there is nothing to gather, and
+    // at the far end of a big room the mic is at hyperfocal distance -- so the
+    // common case of standing back skips three passes outright.
+    const wantDof = opts.dof && opts.maxCoc > 1.5 && opts.cocScale / opts.focus > 0.7;
+    const lens = (u) => {
+      gl.uniformMatrix4fv(u.uInvProj, false, opts.invProj);
+      gl.uniform1f(u.uFocus, opts.focus);
+      gl.uniform1f(u.uCocScale, opts.cocScale);
+      gl.uniform1f(u.uMaxCoc, opts.maxCoc);
+    };
+    if (wantDof) this.draw(this.dofA, this.dofDown, (u) => {
       bind(0, this.scene.colour);
+      bind(1, this.scene.depth);
+      gl.uniform1i(u.uScene, 0);
+      gl.uniform1i(u.uDepth, 1);
+      lens(u);
+    });
+    if (wantDof) this.draw(this.dofB, this.dofGather, (u) => {
+      bind(0, this.dofA.colour);
+      gl.uniform1i(u.uTex, 0);
+      gl.uniform2f(u.uSize, this.dofA.w, this.dofA.h);
+      gl.uniform1f(u.uMaxCoc, opts.maxCoc);
+    });
+    if (wantDof) this.draw(this.focused, this.dofCombine, (u) => {
+      bind(0, this.scene.colour);
+      bind(1, this.scene.depth);
+      bind(2, this.dofB.colour);
+      gl.uniform1i(u.uScene, 0);
+      gl.uniform1i(u.uDepth, 1);
+      gl.uniform1i(u.uBlurred, 2);
+      lens(u);
+    });
+
+    // Nothing downstream reads the scene buffer directly, so when the lens
+    // is skipped the sharp frame has to stand in for its output.
+    const lit = wantDof ? this.focused : this.scene;
+
+    if (opts.volume) this.draw(this.volA, this.volume, (u) => {
+      bind(0, this.scene.depth);
+      gl.uniform1i(u.uDepth, 0);
+      gl.uniformMatrix4fv(u.uInvViewProj, false, opts.invViewProj);
+      gl.uniform3fv(u.uEye, opts.eye);
+      gl.uniform1i(u.uCount, opts.volLightCount);
+      gl.uniform3fv(u.uPos, opts.volPos);
+      gl.uniform3fv(u.uColor, opts.volColor);
+      gl.uniform1fv(u.uRange, opts.volRange);
+      gl.uniform3fv(u.uDir, opts.volDir);
+      gl.uniform2fv(u.uCone, opts.volCone);
+      gl.uniform1f(u.uDensity, opts.volDensity);
+      gl.uniform1f(u.uMaxDist, opts.volMaxDist);
+      gl.uniform1f(u.uSeed, opts.seed);
+    });
+    if (opts.volume) for (const [from, to, step] of [
+      [this.volA, this.volB, [1.5 / this.volA.w, 0]],
+      [this.volB, this.volA, [0, 1.5 / this.volA.h]],
+    ]) {
+      this.draw(to, this.blur, (u) => {
+        bind(0, from.colour);
+        gl.uniform1i(u.uTex, 0);
+        gl.uniform2f(u.uStep, step[0], step[1]);
+      });
+    }
+
+    this.draw(this.bloomA, this.bright, (u) => {
+      bind(0, lit.colour);
       gl.uniform1i(u.uTex, 0);
       gl.uniform1f(u.uThreshold, opts.bloomThreshold);
     });
@@ -344,12 +602,15 @@ export class PostChain {
     }
 
     this.draw(null, this.composite, (u) => {
-      bind(0, this.scene.colour);
+      bind(0, lit.colour);
       bind(1, this.aoA.colour);
       bind(2, this.bloomA.colour);
+      bind(3, this.volA.colour);
       gl.uniform1i(u.uScene, 0);
       gl.uniform1i(u.uAo, 1);
       gl.uniform1i(u.uBloom, 2);
+      gl.uniform1i(u.uVolume, 3);
+      gl.uniform1f(u.uVolumeAmount, opts.volume ? opts.volAmount : 0);
       gl.uniform1f(u.uExposure, opts.exposure);
       gl.uniform1f(u.uBloomAmount, opts.bloomAmount);
       gl.uniform1f(u.uVignette, opts.vignette);

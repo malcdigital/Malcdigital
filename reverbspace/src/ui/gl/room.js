@@ -174,6 +174,10 @@ export function buildRoom(state) {
         colour: [1.0, 0.88, 0.72],
         range: clamp(Math.max(w, d) * 0.7, 5, 34),
         power: 1.3,
+        // The shade is opaque, so this throws down and not up. It is what
+        // leaves the top of the wall dark and puts a cone in the air.
+        dir: [0, -1, 0],
+        cone: [Math.cos(1.36), Math.cos(0.87)],
       });
       // A little spill upward. Every pendant marks the ceiling above it, and
       // without that the shade floats against a flat surface.

@@ -177,6 +177,7 @@ const HANDLE_R = 15;
 const EYE_DROP = 0.10;
 const WALK = 3.2;
 const MAX_LIGHTS = 12;
+const VOL_LIGHTS = 6;
 const SHADOW_SIZE = 1536;
 /** Where the key light comes from. Down and across, so shadows have a length. */
 const SUN = { x: 0.34, y: -1, z: 0.22 };
@@ -190,6 +191,8 @@ const BOUNCE = 1.0;
 export class RoomScene {
   constructor(canvas, hudCanvas) {
     this.canvas = canvas;
+    // 2 = everything, 1 = no scattering, 0 = no depth of field either.
+    this.tier = 2;
     this.hud = hudCanvas;
     this.ctx = hudCanvas.getContext('2d');
     this.cam = new Camera();
@@ -517,6 +520,10 @@ export class RoomScene {
           () => fabricTexture({ base: MATERIALS[preset.seating.material].colour, seed: 23 }))
       : null;
     const metalTex = this.texture('metal', () => plasterTexture({ base: '#585f6d', seed: 9, strength: 0.25 }));
+    // A metal's albedo IS its reflectance, so it has to sit where chrome
+    // actually sits -- around 0.6 -- not at the dark grey that reads right as
+    // a diffuse colour. Tinting the dark one up would scale its grain with it.
+    const chromeTex = this.texture('chrome', () => plasterTexture({ base: '#c9cdd6', seed: 9, strength: 0.13 }));
     const glassTex = this.texture('glasspane', () => plasterTexture({ base: '#20242c', seed: 17, strength: 0.05 }));
 
     const list = [];
@@ -564,8 +571,13 @@ export class RoomScene {
       { ...fabric, uvScale: 1 / 1.1, tint: [0.7, 0.55, 0.46], rough: 0.99, normalStrength: 0.6 });
     add('panelsAlt', batches.panelsAlt,
       { ...fabric, uvScale: 1 / 0.5, tint: [0.66, 0.55, 0.5], rough: 0.95, normalStrength: 0.5 });
-    add('metal', batches.metal, { ...metalTex, uvScale: 1 / 0.4, tint: [1, 1, 1], rough: 0.3, normalStrength: 0.3 });
-    add('decor', batches.decor, { ...metalTex, uvScale: 1 / 0.5, tint: [0.85, 0.8, 0.76], rough: 0.45, normalStrength: 0.3 });
+    // Chrome, and it has to say so: a metal reflects its own colour and has
+    // no diffuse at all, which is why painted grey never passes for a stand.
+    add('metal', batches.metal,
+      { ...chromeTex, uvScale: 1 / 0.4, tint: [1, 1, 1], rough: 0.26, metal: 1, normalStrength: 0.3 });
+    // Spare stands, hooks, plates and the stool are powder-coated, not chrome.
+    add('decor', batches.decor,
+      { ...metalTex, uvScale: 1 / 0.5, tint: [0.85, 0.8, 0.76], rough: 0.42, normalStrength: 0.3 });
     if (seatTex) add('seats', batches.seats, { ...seatTex, uvScale: 1 / 0.6, tint: [1, 1, 1], rough: 0.95, normalStrength: 0.7 });
     // Barely there: a pane is mostly the room reflected in it, which the
     // environment term already supplies.
@@ -584,11 +596,11 @@ export class RoomScene {
     const gl = this.gl;
     if (this.micBatches) for (const b of this.micBatches) b.mesh.dispose();
     const { body, metal, cable } = buildMic(this.state);
-    const metalTex = this.texture('metal', () => plasterTexture({ base: '#585f6d', seed: 9, strength: 0.25 }));
+    const metalTex = this.texture('chrome', () => plasterTexture({ base: '#c9cdd6', seed: 9, strength: 0.13 }));
     const bodyTex = this.texture('micbody', () => plasterTexture({ base: '#9aa3b4', seed: 29, strength: 0.14 }));
     this.micBatches = [
-      { mesh: metal.upload(gl), material: { ...metalTex, uvScale: 1 / 0.3, tint: [1, 1, 1], rough: 0.28, normalStrength: 0.3 } },
-      { mesh: body.upload(gl), material: { ...bodyTex, uvScale: 1 / 0.2, tint: [1, 1, 1], rough: 0.18, normalStrength: 0.25 } },
+      { mesh: metal.upload(gl), material: { ...metalTex, uvScale: 1 / 0.3, tint: [1, 1, 1], rough: 0.26, metal: 1, normalStrength: 0.3 } },
+      { mesh: body.upload(gl), material: { ...bodyTex, uvScale: 1 / 0.2, tint: [1.55, 1.5, 1.42], rough: 0.3, metal: 1, normalStrength: 0.25 } },
       { name: 'cable', mesh: cable.upload(gl),
         material: { ...metalTex, uvScale: 1 / 0.2, tint: [0.2, 0.2, 0.22], rough: 0.75, normalStrength: 0.2 } },
     ];
@@ -603,6 +615,20 @@ export class RoomScene {
     }
     this.w = rect.width;
     this.h = rect.height;
+  }
+
+  /**
+   * What the lens is focused on. The mic when you are standing in the room --
+   * the thing you are aiming at -- and the middle of the room from outside,
+   * where there is no subject and the whole box is what you are looking at.
+   */
+  focusDistance() {
+    const { w, d, h } = this.state.dims;
+    const e = this.cam.eye;
+    const t = this.cam.mode === 'first'
+      ? { x: this.state.mic.x, y: this.state.mic.height, z: this.state.mic.z }
+      : { x: w / 2, y: h / 2, z: d / 2 };
+    return Math.hypot(t.x - e.x, t.y - e.y, t.z - e.z);
   }
 
   get sourcePoint() {
@@ -647,8 +673,39 @@ export class RoomScene {
 
   // ------------------------------------------------------------------ render
 
+  /*
+   * Drop the expensive passes on a machine that cannot afford them.
+   *
+   * Scattering and depth of field are three extra full-screen passes. On a
+   * desktop GPU that is a rounding error; on a phone at three device pixels
+   * per CSS pixel it need not be, and a room you cannot turn is worth less
+   * than a room without haze in it. Measured rather than guessed from the
+   * user agent, because what matters is what this device actually manages.
+   */
+  budget(dtMs) {
+    // Ignore the first frames and any stall: a tab coming back from the
+    // background reports hundreds of milliseconds and means nothing by it.
+    if (dtMs > 0 && dtMs < 400) {
+      this.frameMs = this.frameMs === undefined ? dtMs : this.frameMs * 0.9 + dtMs * 0.1;
+    }
+    if (this.frameMs === undefined) return;
+    this.tierHold = (this.tierHold || 0) + 1;
+    // Wide hysteresis, and far more patience going up than coming down. With
+    // the two thresholds close together a machine that lands between them
+    // after a drop climbs straight back, slows down and drops again -- and the
+    // haze blinks on and off once a second, which is worse than not having it.
+    if (this.frameMs > 30 && this.tier > 0 && this.tierHold > 45) {
+      this.tier--;
+      this.tierHold = 0;
+    } else if (this.frameMs < 11 && this.tier < 2 && this.tierHold > 300) {
+      this.tier++;
+      this.tierHold = 0;
+    }
+  }
+
   render(dtMs) {
     if (!this.state) return;
+    this.budget(dtMs);
     this.cam.bias = this.reserved / 2;
     this.walk(dtMs / 1000);
     if (this.cam.mode === 'orbit' && this.needsFit) this.fit(this.w, this.h);
@@ -704,16 +761,24 @@ export class RoomScene {
     const pos = new Float32Array(MAX_LIGHTS * 3);
     const col = new Float32Array(MAX_LIGHTS * 3);
     const rng = new Float32Array(MAX_LIGHTS);
+    const dir = new Float32Array(MAX_LIGHTS * 3);
+    const cone = new Float32Array(MAX_LIGHTS * 2);
     lights.forEach((l, i) => {
       pos.set(l.pos, i * 3);
       col.set([l.colour[0] * l.power, l.colour[1] * l.power, l.colour[2] * l.power], i * 3);
       rng[i] = l.range;
+      dir.set(l.dir || [0, -1, 0], i * 3);
+      // A cone that spans every direction is how an unshaded source says it
+      // has no aim, without the shader needing a branch for the common case.
+      cone.set(l.cone || [-1.0, -0.999], i * 2);
     });
     if (this.bounce) gl.uniform3fv(u.uBounce, this.bounce);
     gl.uniform1i(u.uLightCount, lights.length);
     gl.uniform3fv(u.uLightPos, pos);
     gl.uniform3fv(u.uLightColor, col);
     gl.uniform1fv(u.uLightRange, rng);
+    gl.uniform3fv(u.uLightDir, dir);
+    gl.uniform2fv(u.uLightCone, cone);
 
     const big = Math.max(w, d, h);
     // Neutral ambient: leaning it warm as well as the lamps pushed every
@@ -761,6 +826,7 @@ export class RoomScene {
       gl.uniform2f(u.uUvScale, m.uvScale, m.uvScale);
       gl.uniform3fv(u.uTint, m.tint || [1, 1, 1]);
       gl.uniform1f(u.uRough, m.rough ?? 0.7);
+      gl.uniform1f(u.uMetal, m.metal ?? 0);
       gl.uniform1f(u.uNormalStrength, m.normalStrength ?? 1);
       gl.uniform3fv(u.uEmissive, m.emissive || [0, 0, 0]);
       gl.bindVertexArray(batch.mesh.vao);
@@ -788,6 +854,38 @@ export class RoomScene {
         vignette: 0.28,
         grain: 0.05,
         seed: (this.rayClock * 60) % 1000,
+        // In-scattering, from the nearest handful of the same lights. Marching
+        // twelve of them per step is most of a frame for light that is already
+        // smooth; six is indistinguishable and a third of the cost.
+        invViewProj: invert4(this.cam.viewProj()),
+        eye: [this.cam.eye.x, this.cam.eye.y, this.cam.eye.z],
+        volLightCount: Math.min(lights.length, VOL_LIGHTS),
+        volPos: pos.subarray(0, VOL_LIGHTS * 3),
+        volColor: col.subarray(0, VOL_LIGHTS * 3),
+        volRange: rng.subarray(0, VOL_LIGHTS),
+        volDir: dir.subarray(0, VOL_LIGHTS * 3),
+        volCone: cone.subarray(0, VOL_LIGHTS * 2),
+        // A tracking room is not a smoky bar: at close range you should see
+        // the cone under a fitting and nothing else. What builds with distance
+        // is aerial perspective, and that wants the length of a nave to show.
+        // The march only has to reach as far as the room is long.
+        volDensity: 0.035 + clamp((big - 6) / 650, 0, 0.075),
+        volMaxDist: big * 1.6,
+        volAmount: 1.0,
+        volume: this.tier >= 2,
+        dof: this.tier >= 1,
+        // Focus on the mic: it is the subject, and it is the one distance the
+        // user is already choosing. The circle of confusion at infinity is
+        // cocScale/focus, so a mic held close throws the room out and a mic
+        // set back brings it in -- which is what the lens would do.
+        focus: Math.max(0.35, this.focusDistance()),
+        // Stopped well down from what a room this dim would really need. At
+        // a true f/2 the back wall is unreadable, and this is a tool you have
+        // to see the room in -- the shape of the falloff is what sells it, not
+        // the amount. A mic at 0.6 m still throws the far wall soft; one set
+        // back at 3 m brings almost everything in, as it should.
+        cocScale: 5.2 * (this.h / 800) * this.dpr,
+        maxCoc: clamp(this.h / 130, 3, 9) * this.dpr,
       });
     }
   }
