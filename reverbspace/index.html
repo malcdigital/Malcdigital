@@ -19,6 +19,7 @@
   <div class="transport">
     <div class="sources" id="sources"></div>
     <button class="btn" id="play">Play</button>
+    <button class="btn" id="stop" disabled>Stop</button>
     <label class="toggle"><input type="checkbox" id="loop"> loop</label>
     <label class="btn file">Load file<input type="file" id="file" accept="audio/*" hidden></label>
     <button class="btn" id="live">Live in</button>
@@ -83,20 +84,20 @@
 
     <div class="group">
       <h2>Soundproofing</h2>
-      <label class="row"><span>how far</span>
+      <label class="row"><span>treatment</span>
         <input type="range" id="treat" min="0" max="6" step="1" value="5">
-        <output id="treat-out">Bare</output>
+        <output id="treat-out">0 / 6</output>
       </label>
+      <p class="blurb"><strong id="treat-name"></strong> <span id="treat-note"></span></p>
       <label class="row"><span>type</span>
         <select id="treat-type"></select>
       </label>
-      <p class="blurb" id="treat-stage"></p>
       <p class="blurb" id="treat-blurb"></p>
     </div>
 
     <div class="group">
       <h2>Performer</h2>
-      <button class="btn wide" id="reset-places">Put everyone back</button>
+      <button class="btn wide" id="reset-places">Reset Position</button>
       <label class="row"><span>height</span>
         <input type="range" id="src-h" min="0.2" max="3" step="0.01" value="1.6">
         <output id="src-h-out">1.60 m</output>

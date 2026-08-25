@@ -61,6 +61,9 @@ body {
   transition: background 0.15s, border-color 0.15s, color 0.15s;
 }
 .btn:hover { background: #1e2431; border-color: #3a4356; }
+.blurb strong { color: var(--text); font-weight: 600; }
+.btn:disabled { opacity: 0.4; cursor: default; }
+.btn:disabled:hover { background: var(--panel-2); border-color: var(--line); }
 .btn.on { background: var(--accent); border-color: var(--accent); color: #14161c; font-weight: 600; }
 .btn.danger.on { background: #d05a4e; border-color: #d05a4e; color: #fff; }
 .btn.file { display: inline-flex; align-items: center; }

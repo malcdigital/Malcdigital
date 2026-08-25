@@ -273,10 +273,13 @@ function syncInputs() {
   $('height').value = state.dims.h;
   $('height-out').textContent = `${state.dims.h.toFixed(1)} m`;
 
-  const stage = STAGES[clampStage(state.treatment.stage)];
-  $('treat').value = clampStage(state.treatment.stage);
-  $('treat-out').textContent = stage.name;
-  $('treat-stage').textContent = stage.blurb;
+  // The step number goes in the value slot with every other row's number; the
+  // name is a name and needs a line of its own, not a column sized for "35%".
+  const step = clampStage(state.treatment.stage);
+  $('treat').value = step;
+  $('treat-out').textContent = `${step} / ${MAX_STAGE}`;
+  $('treat-name').textContent = STAGES[step].name;
+  $('treat-note').textContent = STAGES[step].blurb;
   $('treat-type').value = state.treatment.type;
   $('treat-blurb').textContent = TREATMENTS[state.treatment.type].blurb;
 
@@ -345,6 +348,13 @@ function bindControls() {
   });
 
   on('play', 'click', play);
+  // Stop means everything quiet, live input included. A stop button that
+  // leaves sound coming through is a stop button that does not work.
+  on('stop', 'click', () => {
+    audio.stopAll();
+    $('live').classList.remove('on');
+    syncTransport();
+  });
   on('loop', 'change', () => { if (audio.playing) play(); });
   on('live', 'click', async () => {
     await audio.start();
@@ -393,7 +403,15 @@ async function play() {
   if (audio.play(currentSource, { loop })) scene.ping();
 }
 
+/** Play and Stop reflect what is actually making a noise. */
+function syncTransport() {
+  const on = audio.playing;
+  $('stop').disabled = !on;
+  $('play').classList.toggle('on', on);
+}
+
 function updateMeters() {
+  syncTransport();
   const m = audio.meters;
   $('meter-in').style.width = `${clamp(m.in * 100, 0, 100)}%`;
   $('meter-out').style.width = `${clamp(m.out * 100, 0, 100)}%`;

@@ -279,7 +279,7 @@ const atStage = (n) => page.evaluate(async (stage) => {
   const t = await import('/src/core/treatment.js');
   const s = window.reverbspace.state;
   return {
-    label: document.querySelector('#treat-out').textContent,
+    label: document.querySelector('#treat-name').textContent,
     cover: t.zoneCoverage(s).wall,
     rects: t.treatmentZones(s).zones.reduce((k, w) => k + w.length, 0),
     rt: parseFloat(document.querySelectorAll('#stats dd')[0].textContent),
@@ -321,6 +321,27 @@ await page.click('#reset-places');
 await page.waitForTimeout(400);
 const back = await places();
 check('the reset puts the performer and the mic back', back !== moved, `${moved} -> ${back}`);
+
+// Stop has to actually stop, and the buttons have to say what is true: a
+// disabled Stop while a loop is running is worse than no Stop at all.
+await page.click('.src[data-id="loop"]');
+await page.evaluate(() => { document.querySelector('#loop').checked = true; });
+await page.click('#play');
+await page.waitForTimeout(700);
+const running = await page.evaluate(() => ({
+  playing: window.reverbspace.audio.playing,
+  stopEnabled: !document.querySelector('#stop').disabled,
+}));
+check('a looping test sound plays, and Stop lights up',
+  running.playing && running.stopEnabled, JSON.stringify(running));
+await page.click('#stop');
+await page.waitForTimeout(400);
+const stopped = await page.evaluate(() => ({
+  playing: window.reverbspace.audio.playing,
+  stopEnabled: !document.querySelector('#stop').disabled,
+}));
+check('Stop stops it, and goes back to dimmed',
+  !stopped.playing && !stopped.stopEnabled, JSON.stringify(stopped));
 
 await browser.close();
 

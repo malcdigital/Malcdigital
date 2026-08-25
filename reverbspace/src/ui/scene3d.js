@@ -901,13 +901,13 @@ export class RoomScene {
         // cocScale/focus, so a mic held close throws the room out and a mic
         // set back brings it in -- which is what the lens would do.
         focus: Math.max(0.35, this.focusDistance()),
-        // Stopped well down from what a room this dim would really need. At
-        // a true f/2 the back wall is unreadable, and this is a tool you have
-        // to see the room in -- the shape of the falloff is what sells it, not
-        // the amount. A mic at 0.6 m still throws the far wall soft; one set
-        // back at 3 m brings almost everything in, as it should.
-        cocScale: 5.2 * (this.h / 800) * this.dpr,
-        maxCoc: clamp(this.h / 130, 3, 9) * this.dpr,
+        // Stopped a long way down from what a room this dim would really
+        // need. At anything like a true aperture the back wall is unreadable,
+        // and this is a tool you have to see the room in: it is the shape of
+        // the falloff that says "lens", not the amount of it. A mic held at
+        // 0.6 m still softens the far wall; one set back brings it in.
+        cocScale: 3.0 * (this.h / 800) * this.dpr,
+        maxCoc: clamp(this.h / 190, 2, 6) * this.dpr,
       });
     }
   }
