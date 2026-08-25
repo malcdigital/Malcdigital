@@ -449,6 +449,14 @@ export class RoomScene {
       { ...fabric, uvScale: 1 / 0.3, tint: [1, 1, 1], rough: 0.99, normalStrength: 0.5 });
     add('diffuser', batches.diffuser,
       { ...trimTex, uvScale: 1 / 0.5, tint: [1.15, 1.06, 0.92], rough: 0.5, normalStrength: 0.7 });
+    // Painted enamel: darker outside than the light it throws, which is what
+    // stops a lit shade reading as a glowing blob.
+    add('shade', batches.shade,
+      { ...metalTex, uvScale: 1 / 0.35, tint: [0.62, 0.6, 0.6], rough: 0.35, normalStrength: 0.25 });
+    // Lit fabric: glowing, but not a light source in its own right.
+    add('shadeSoft', batches.shadeSoft,
+      { ...fabric, uvScale: 1 / 0.3, tint: [1.25, 1.15, 0.95], rough: 0.98, normalStrength: 0.4,
+        emissive: [0.30, 0.235, 0.145] });
     add('door', batches.door,
       { ...trimTex, uvScale: 1 / 0.9, tint: [1.1, 1.0, 0.88], rough: 0.45, normalStrength: 0.7 });
     add('rug', batches.rug,

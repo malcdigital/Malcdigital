@@ -196,6 +196,50 @@ export class MeshBuilder {
     return this;
   }
 
+  /**
+   * A truncated cone from a to b. Lamp shades are cones, not boxes, and the
+   * taper is most of what makes a fixture read as a fixture.
+   */
+  frustum(a, b, rA, rB, sides = 18, capA = false, capB = false) {
+    const ax = normalize(sub(b, a));
+    const helper = Math.abs(ax[1]) > 0.9 ? [1, 0, 0] : [0, 1, 0];
+    const u = normalize(cross(ax, helper));
+    const v = cross(ax, u);
+    const ring = (p, r) => {
+      const out = [];
+      for (let i = 0; i < sides; i++) {
+        const t = (i / sides) * Math.PI * 2;
+        const c = Math.cos(t) * r, s2 = Math.sin(t) * r;
+        out.push([p[0] + u[0] * c + v[0] * s2, p[1] + u[1] * c + v[1] * s2, p[2] + u[2] * c + v[2] * s2]);
+      }
+      return out;
+    };
+    const A = ring(a, rA), B = ring(b, rB);
+    for (let i = 0; i < sides; i++) {
+      const j = (i + 1) % sides;
+      this.quad(A[i], A[j], B[j], B[i]);
+    }
+    if (capB) for (let i = 1; i < sides - 1; i++) this.tri(B[0], B[i], B[i + 1]);
+    if (capA) for (let i = 1; i < sides - 1; i++) this.tri(A[0], A[i + 1], A[i]);
+    return this;
+  }
+
+  /** A flat disc facing along `dir`, for a lamp's mouth or a bulb. */
+  disc(centre, radius, dir, sides = 18) {
+    const ax = normalize(dir);
+    const helper = Math.abs(ax[1]) > 0.9 ? [1, 0, 0] : [0, 1, 0];
+    const u = normalize(cross(ax, helper));
+    const v = cross(ax, u);
+    const pts = [];
+    for (let i = 0; i < sides; i++) {
+      const t = (i / sides) * Math.PI * 2;
+      const c = Math.cos(t) * radius, s2 = Math.sin(t) * radius;
+      pts.push([centre[0] + u[0] * c + v[0] * s2, centre[1] + u[1] * c + v[1] * s2, centre[2] + u[2] * c + v[2] * s2]);
+    }
+    for (let i = 1; i < sides - 1; i++) this.tri(pts[0], pts[i], pts[i + 1]);
+    return this;
+  }
+
   /** A wedge tile, as acoustic foam is actually moulded. */
   wedge(centre, size, height, axis, sign) {
     const h = size / 2;

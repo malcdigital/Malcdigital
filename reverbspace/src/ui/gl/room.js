@@ -55,6 +55,8 @@ export function buildRoom(state) {
     diffuser: new MeshBuilder(),
     rug: new MeshBuilder(),
     door: new MeshBuilder(),
+    shade: new MeshBuilder(),
+    shadeSoft: new MeshBuilder(),
     decor: new MeshBuilder(),
   };
   const lights = [];
@@ -127,6 +129,40 @@ export function buildRoom(state) {
       } else {
         out.trim.box([0, h - bh, z - bw / 2], [w, h, z + bw / 2]);
       }
+    }
+  }
+
+  // Pendants. These were bare point lights with no fixture at all -- light
+  // arriving from nothing, which is the least convincing thing a room can do.
+  // Now they hang, and they are what actually lights the place.
+  const cols = clamp(Math.round(w / 3.1), 1, 3);
+  const rows = clamp(Math.round(d / 2.7), 1, 4);
+  const hangY = clamp(Math.min(eaves - 0.5, h * 0.72), 1.95, 4.2);
+  const pendants = [];
+  for (let i = 0; i < cols; i++) {
+    for (let j = 0; j < rows; j++) {
+      const px = ((i + 0.5) / cols) * w;
+      const pz = ((j + 0.5) / rows) * d;
+      // Follow the roof line, so every shade still hangs level.
+      const local = rise > 0.01 ? eaves + (1 - Math.abs(px - w / 2) / (w / 2)) * rise * 2 : h;
+      if (hangY > local - 0.35) continue;
+      const shadeTop = hangY + 0.24;
+      const rTop = 0.055, rMouth = 0.21;
+
+      out.metal.box([px - 0.05, local - 0.03, pz - 0.05], [px + 0.05, local, pz + 0.05]);
+      out.metal.tube([px, local - 0.02, pz], [px, shadeTop, pz], 0.006, 5, false);
+      out.shade.frustum([px, shadeTop, pz], [px, hangY, pz], rTop, rMouth, 20, true, false);
+      // The inside of the shade and the lamp itself, both lit.
+      out.glow.disc([px, hangY + 0.012, pz], rMouth * 0.94, [0, -1, 0]);
+      out.glow.frustum([px, hangY + 0.13, pz], [px, hangY + 0.04, pz], 0.028, 0.045, 10, true, true);
+      pendants.push([px, pz]);
+
+      lights.push({
+        pos: [px, hangY - 0.06, pz],
+        colour: [1.0, 0.9, 0.76],
+        range: clamp(Math.max(w, d) * 0.7, 5, 34),
+        power: 1.25,
+      });
     }
   }
 
@@ -251,6 +287,8 @@ export function buildRoom(state) {
       for (let i = 0; i < count; i++) {
         const cx = lerp(cw, w - cw, hash(i, 101));
         const cz = lerp(cd, d - cd, hash(i, 211));
+        // Keep clear of the fixtures rather than hanging through them.
+        if (pendants.some(([px, pz]) => Math.hypot(px - cx, pz - cz) < cw * 0.7)) continue;
         const local = rise > 0.01 ? eaves + (1 - Math.abs(cx - w / 2) / (w / 2)) * rise * 2 : h;
         const drop = lerp(0.2, 0.8, hash(i, 307)) * clamp(h / 3.2, 0.6, 2.6);
         const y = local - drop - 0.05;
@@ -281,46 +319,30 @@ export function buildRoom(state) {
     const n = clamp(Math.round(wall.len / 4.2), 1, 8);
     for (let i = 0; i < n; i++) {
       const p = wall.at(((i + 0.5) / n) * wall.len);
-      // A shade: wide, shallow, standing off the wall, open top and bottom.
-      const halfW = 0.22, halfH = 0.15, depth = 0.11;
-      const lo = [p[0] - halfW, p[1] - halfH, p[2] - halfW];
-      const hi = [p[0] + halfW, p[1] + halfH, p[2] + halfW];
-      if (wall.push[0] !== 0) {
-        lo[0] = p[0] - (wall.push[0] > 0 ? 0.01 : depth);
-        hi[0] = p[0] + (wall.push[0] > 0 ? depth : 0.01);
-      } else {
-        lo[2] = p[2] - (wall.push[2] > 0 ? 0.01 : depth);
-        hi[2] = p[2] + (wall.push[2] > 0 ? depth : 0.01);
-      }
-      out.glow.box(lo, hi);
-      out.trim.box(
-        [lo[0] - 0.012, lo[1] - 0.03, lo[2] - 0.012],
-        [hi[0] + 0.012, lo[1], hi[2] + 0.012]);
+      // An upright fabric shade on a bracket, open top and bottom -- the shade
+      // itself glows, which is what a lit lampshade does and what a dark cone
+      // stuck to the wall conspicuously does not.
+      const back = [p[0], p[1], p[2]];
+      const out1 = [p[0] + wall.push[0] * 0.16, p[1], p[2] + wall.push[2] * 0.16];
+      const lo = [out1[0], p[1] - 0.17, out1[2]];
+      const hi = [out1[0], p[1] + 0.17, out1[2]];
+      out.shadeSoft.frustum(lo, hi, 0.135, 0.115, 16, false, false);
+      out.metal.tube(back, out1, 0.013, 6);
+      out.metal.box([back[0] - 0.055, p[1] - 0.075, back[2] - 0.055],
+                    [back[0] + 0.055, p[1] + 0.075, back[2] + 0.055]);
+      out.glow.disc([out1[0], p[1] + 0.168, out1[2]], 0.105, [0, 1, 0]);
+      out.glow.disc([out1[0], p[1] - 0.168, out1[2]], 0.125, [0, -1, 0]);
       // Two sources, just clear of the shade top and bottom and close in to
       // the wall, which is what gives a sconce its pair of pools.
-      const range = clamp(Math.max(w, d, h) * 0.4, 3, 18);
-      for (const dy of [halfH + 0.06, -halfH - 0.06]) {
+      const range = clamp(Math.max(w, d, h) * 0.34, 2.6, 14);
+      for (const dy of [0.2, -0.2]) {
         lights.push({
-          pos: [p[0] + wall.push[0] * 0.16, p[1] + dy, p[2] + wall.push[2] * 0.16],
+          pos: [p[0] + wall.push[0] * 0.13, p[1] + dy, p[2] + wall.push[2] * 0.13],
           colour: [1.0, 0.84, 0.63],
           range,
-          power: 0.62,
+          power: 0.42,
         });
       }
-    }
-  }
-
-  // Overhead fill. A tracking room is not lit by wall sconces alone, and
-  // without this the floor reads as a black hole under everything.
-  const fills = clamp(Math.round((w * d) / 26), 1, 4);
-  for (let i = 0; i < fills; i++) {
-    for (let j = 0; j < fills; j++) {
-      lights.push({
-        pos: [((i + 0.5) / fills) * w, h * 0.92, ((j + 0.5) / fills) * d],
-        colour: [1.0, 0.94, 0.87],
-        range: clamp(Math.max(w, d) * 0.8, 6, 40),
-        power: 0.5,
-      });
     }
   }
 
