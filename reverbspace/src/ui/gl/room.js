@@ -54,6 +54,9 @@ export function buildRoom(state) {
     foam: new MeshBuilder(),
     diffuser: new MeshBuilder(),
     rug: new MeshBuilder(),
+    propDark: new MeshBuilder(),
+    cloth: new MeshBuilder(),
+    paper: new MeshBuilder(),
     door: new MeshBuilder(),
     shade: new MeshBuilder(),
     shadeSoft: new MeshBuilder(),
@@ -469,12 +472,14 @@ export function buildRoom(state) {
   // ---- decoration: drawn, not modelled -----------------------------------
   // Spare stands along a wall, coiled cable on hooks, a stool. None of this
   // absorbs anything; it is here because a room without it looks unused.
-  const stands = clamp(Math.round(d / 1.1), 2, 7);
+  // Kept to the left-hand wall: the piano lives against the right one, and a
+  // second forest of chrome poles growing through it looked like a mistake.
+  const stands = clamp(Math.round(d / 1.5), 2, 5);
   for (let i = 0; i < stands; i++) {
-    const bz = clamp(d * 0.35 + i * 0.26, 0.4, d - 0.4);
-    const bx = w - 0.42;
-    out.decor.tube([bx, 0.02, bz], [bx - 0.12 - (i % 2) * 0.04, 1.42 + (i % 3) * 0.13, bz - 0.1], 0.015, 6);
-    out.decor.box([bx - 0.15, 0, bz - 0.15], [bx + 0.14, 0.025, bz + 0.15]);
+    const bz = clamp(patchZ + 0.55 + i * 0.28, 0.4, Math.max(0.6, d - 1.7));
+    const bx = 0.42;
+    out.decor.tube([bx, 0.02, bz], [bx + 0.12 + (i % 2) * 0.04, 1.42 + (i % 3) * 0.13, bz - 0.1], 0.015, 6);
+    out.decor.box([bx - 0.14, 0, bz - 0.15], [bx + 0.15, 0.025, bz + 0.15]);
   }
   if (h > 2.2 && w > 3) {
     const rows = 2;
@@ -513,13 +518,146 @@ export function buildRoom(state) {
     out.decor.box([0.07, 1.0 + u * 0.13, panelZ - 0.26], [0.09, 1.08 + u * 0.13, panelZ + 0.26]);
   }
 
-  const sx = 0.75, sz = d - 0.9;
+  buildProps(out, preset, w, d, h);
+
+  // The stool goes in the far right corner -- the far left one has the amp.
+  const sx = w - 0.8, sz = d - 0.8;
   out.decor.box([sx - 0.19, 0.56, sz - 0.19], [sx + 0.19, 0.62, sz + 0.19]);
   for (const [ox, oz] of [[-0.14, -0.14], [0.14, -0.14], [0.14, 0.14], [-0.14, 0.14]]) {
     out.decor.tube([sx + ox, 0, sz + oz], [sx + ox * 0.75, 0.56, sz + oz * 0.75], 0.012, 5);
   }
 
   return { batches: out, lights };
+}
+
+/**
+ * The things that make a room look worked in rather than rendered: an electric
+ * piano along one wall, an amp in the corner, a guitar on its stand, a music
+ * stand out in the floor and headphones on a hook.
+ *
+ * Every one of these is decoration. They would all absorb sound in life -- a
+ * speaker cabinet is a bass trap with a handle -- and none of them does here.
+ */
+function buildProps(out, preset, w, d, h) {
+  // A guitar amp in a cathedral is a joke, not a detail. These belong to the
+  // studio, and to a studio with room for them.
+  if (preset.id !== 'studio' || w < 3.4 || d < 3) return;
+
+  // --- electric piano, along the right-hand wall --------------------------
+  const px = w - 0.44, pz = clamp(d * 0.36, 0.9, d - 1.2);
+  const bodyY = 0.72, bodyLen = clamp(Math.min(1.35, d * 0.32), 0.9, 1.35);
+  out.propDark.box([px - 0.24, bodyY, pz - bodyLen / 2], [px + 0.2, bodyY + 0.14, pz + bodyLen / 2]);
+
+  // A keyboard is the one thing here everyone can name on sight, so it is
+  // worth the geometry: a white bed, then the sharps in their 2-3 pattern.
+  const kz0 = pz - bodyLen / 2 + 0.055, kz1 = pz + bodyLen / 2 - 0.055;
+  const whites = Math.max(14, Math.round((kz1 - kz0) / 0.0232));
+  const kw = (kz1 - kz0) / whites;
+  out.paper.box([px - 0.155, bodyY + 0.14, kz0], [px + 0.02, bodyY + 0.158, kz1]);
+  for (let i = 0; i < whites - 1; i++) {
+    const step = i % 7;
+    if (step === 2 || step === 6) continue;      // no sharp between E-F or B-C
+    const z = kz0 + (i + 1) * kw;
+    out.propDark.box([px - 0.155, bodyY + 0.158, z - kw * 0.28],
+                     [px - 0.056, bodyY + 0.171, z + kw * 0.28]);
+  }
+  // Fall behind the keys, with a control strip and a power lamp on it.
+  out.propDark.box([px + 0.02, bodyY + 0.14, pz - bodyLen / 2 + 0.04],
+                   [px + 0.2, bodyY + 0.21, pz + bodyLen / 2 - 0.04]);
+  for (let i = 0; i < 4; i++) {
+    const z = pz - 0.24 + i * 0.16;
+    out.metal.tube([px + 0.09, bodyY + 0.21, z], [px + 0.09, bodyY + 0.235, z], 0.014, 8);
+  }
+  out.glow.box([px + 0.05, bodyY + 0.212, pz - 0.4], [px + 0.09, bodyY + 0.218, pz - 0.36]);
+
+  // An X-frame stand under it: four spindles read as scaffolding, two crossed
+  // tubes per end read as the thing you actually carry to gigs.
+  for (const oz of [-bodyLen / 2 + 0.16, bodyLen / 2 - 0.16]) {
+    out.metal.tube([px - 0.3, 0.012, pz + oz], [px + 0.1, bodyY, pz + oz], 0.023, 8);
+    out.metal.tube([px + 0.14, 0.012, pz + oz], [px - 0.22, bodyY, pz + oz], 0.023, 8);
+  }
+  out.metal.tube([px - 0.06, bodyY * 0.5, pz - bodyLen / 2 + 0.16],
+                 [px - 0.06, bodyY * 0.5, pz + bodyLen / 2 - 0.16], 0.018, 6);
+
+  // --- amp cabinet, in the far corner -------------------------------------
+  const ax = 0.62, az = d - 0.62;
+  out.propDark.box([ax - 0.3, 0.05, az - 0.24], [ax + 0.3, 0.78, az + 0.22]);
+  // Grille cloth, recessed behind the baffle, in a weave rather than the
+  // cabinet's own near-black: a grille you cannot see is just a crate.
+  out.cloth.box([ax - 0.24, 0.16, az - 0.252], [ax + 0.24, 0.58, az - 0.238]);
+  // Control panel along the top of the front, four knobs and a pilot lamp.
+  out.propDark.box([ax - 0.28, 0.63, az - 0.26], [ax + 0.28, 0.74, az - 0.235]);
+  for (let i = 0; i < 4; i++) {
+    const kx = ax - 0.13 + i * 0.087;
+    out.metal.tube([kx, 0.685, az - 0.26], [kx, 0.685, az - 0.285], 0.016, 8);
+  }
+  out.glow.box([ax + 0.21, 0.665, az - 0.268], [ax + 0.25, 0.705, az - 0.262]);
+  // Strap handle on top, and rubber feet.
+  out.propDark.arcTube([ax, 0.78, az], 0.1, 0.15, Math.PI - 0.15, 0.014, 'xy', 10);
+  for (const ox of [-0.24, 0.24]) {
+    for (const oz of [-0.16, 0.16]) {
+      out.metal.tube([ax + ox, 0.05, az + oz], [ax + ox, 0.0, az + oz], 0.022, 5);
+    }
+  }
+
+  // --- guitar on its stand ------------------------------------------------
+  // Built in the plane it leans in: two bouts and a waist for the body, then
+  // neck, fretboard and head straight up that same axis. A guitar is all
+  // silhouette, so the outline has to be right before anything else matters.
+  const gx = clamp(px - 0.78, 1, w - 1), gz = clamp(pz + bodyLen / 2 + 0.6, 0.7, d - 0.7);
+  const lean = 0.2;
+  const up = [Math.sin(lean), Math.cos(lean), 0];
+  const right = [0, 0, 1];
+  const fwd = [-Math.cos(lean), Math.sin(lean), 0];   // out of the soundboard
+  const at = (u, f = 0) => [gx + up[0] * u + fwd[0] * f, 0.24 + up[1] * u + fwd[1] * f,
+                            gz + up[2] * u + fwd[2] * f];
+  const slab = (u, f, halfDepth, r, sides) =>
+    out.trim.tube(at(u, f - halfDepth), at(u, f + halfDepth), r, sides);
+  slab(0.06, 0, 0.043, 0.175, 18);                    // lower bout
+  slab(0.34, 0, 0.04, 0.135, 16);                     // upper bout
+  out.trim.orientedBox(at(0.2), right, up, [0.2, 0.3, 0.083]);   // waist
+  out.propDark.tube(at(0.24, 0.038), at(0.24, 0.05), 0.048, 14); // soundhole
+  out.propDark.orientedBox(at(0.0, 0.048), right, up, [0.14, 0.022, 0.014]);  // bridge
+  out.trim.tube(at(0.44, 0.012), at(0.95, 0.012), 0.019, 10);    // neck
+  out.propDark.orientedBox(at(0.7, 0.03), right, up, [0.056, 0.45, 0.009]);   // fretboard
+  out.propDark.orientedBox(at(1.02, 0.014), right, up, [0.076, 0.15, 0.015]); // head
+  // The A-frame under it.
+  for (const s2 of [-1, 1]) {
+    out.metal.tube([gx - 0.17, 0.012, gz + s2 * 0.2], [gx + 0.03, 0.3, gz + s2 * 0.05], 0.013, 6);
+    out.metal.tube([gx + 0.25, 0.012, gz + s2 * 0.2], [gx + 0.03, 0.3, gz + s2 * 0.05], 0.013, 6);
+  }
+  out.metal.tube([gx + 0.03, 0.28, gz - 0.11], [gx + 0.03, 0.28, gz + 0.11], 0.012, 6);
+
+  // --- music stand --------------------------------------------------------
+  const mx = clamp(w * 0.34, 0.8, w - 0.8), mz = clamp(d * 0.66, 0.8, d - 0.8);
+  const deskY = 1.06;
+  for (let i = 0; i < 3; i++) {
+    const a = (i / 3) * Math.PI * 2 + 0.4;
+    out.metal.tube([mx, 0.09, mz], [mx + Math.sin(a) * 0.26, 0.012, mz + Math.cos(a) * 0.26], 0.011, 5);
+  }
+  out.metal.tube([mx, 0.06, mz], [mx, deskY - 0.02, mz], 0.014, 8);
+  // Desk tipped back off vertical, with a lip along the bottom.
+  const tilt = 0.34;
+  const deskUp = [0, Math.cos(tilt), -Math.sin(tilt)];
+  out.propDark.orientedBox([mx, deskY + 0.12, mz + 0.04], [1, 0, 0], deskUp, [0.48, 0.3, 0.012]);
+  out.propDark.orientedBox([mx, deskY - 0.02, mz + 0.09], [1, 0, 0], deskUp, [0.48, 0.03, 0.03]);
+  // Sheet music, sitting on the lip and leaning on the desk.
+  out.paper.orientedBox([mx - 0.01, deskY + 0.15, mz + 0.028], [1, 0, 0], deskUp, [0.42, 0.29, 0.004]);
+
+  // --- headphones, hooked on the far wall ---------------------------------
+  if (h > 2.2) {
+    const hx = w - 0.02, hy = clamp(h * 0.46, 1.2, 1.9), hz = clamp(d * 0.72, 0.6, d - 0.6);
+    out.metal.tube([hx, hy, hz], [hx - 0.09, hy + 0.01, hz], 0.011, 5);
+    const bandR = 0.105;
+    out.propDark.arcTube([hx - 0.09, hy - 0.02, hz], bandR, Math.PI * 0.08, Math.PI * 0.92,
+                         0.012, 'zy', 14);
+    for (const s2 of [-1, 1]) {
+      const cz = hz + Math.cos(s2 > 0 ? Math.PI * 0.08 : Math.PI * 0.92) * bandR;
+      const cy = hy - 0.02 + Math.sin(Math.PI * 0.08) * bandR;
+      out.cloth.frustum([hx - 0.045, cy - 0.03, cz], [hx - 0.115, cy - 0.03, cz],
+                        0.045, 0.052, 14, true, true);
+    }
+  }
 }
 
 /** Where the control-room window sits, or null for a room that has none. */

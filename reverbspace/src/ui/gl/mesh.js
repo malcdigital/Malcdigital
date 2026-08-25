@@ -197,6 +197,45 @@ export class MeshBuilder {
   }
 
   /**
+   * A box on arbitrary axes. Everything so far has been axis-aligned or turned
+   * about the vertical; a music stand's desk and a guitar leaning on a stand
+   * are neither.
+   */
+  orientedBox(centre, right, up, size) {
+    const r = normalize(right);
+    let u = normalize(up);
+    const f = normalize(cross(r, u));
+    u = cross(f, r);
+    const at = (a, b, c) => [
+      centre[0] + r[0] * a * size[0] / 2 + u[0] * b * size[1] / 2 + f[0] * c * size[2] / 2,
+      centre[1] + r[1] * a * size[0] / 2 + u[1] * b * size[1] / 2 + f[1] * c * size[2] / 2,
+      centre[2] + r[2] * a * size[0] / 2 + u[2] * b * size[1] / 2 + f[2] * c * size[2] / 2,
+    ];
+    const c000 = at(-1, -1, -1), c100 = at(1, -1, -1), c110 = at(1, 1, -1), c010 = at(-1, 1, -1);
+    const c001 = at(-1, -1, 1), c101 = at(1, -1, 1), c111 = at(1, 1, 1), c011 = at(-1, 1, 1);
+    this.quad(c001, c101, c111, c011);
+    this.quad(c100, c000, c010, c110);
+    this.quad(c000, c001, c011, c010);
+    this.quad(c101, c100, c110, c111);
+    this.quad(c010, c011, c111, c110);
+    this.quad(c001, c000, c100, c101);
+    return this;
+  }
+
+  /** An arc of tube: a headphone band, a handle, anything bent. */
+  arcTube(centre, radius, from, to, thickness, plane = 'xy', segments = 12) {
+    const pt = (t) => {
+      const a = from + (to - from) * (t / segments);
+      const c = Math.cos(a) * radius, s2 = Math.sin(a) * radius;
+      if (plane === 'xy') return [centre[0] + c, centre[1] + s2, centre[2]];
+      if (plane === 'zy') return [centre[0], centre[1] + s2, centre[2] + c];
+      return [centre[0] + c, centre[1], centre[2] + s2];
+    };
+    for (let i = 0; i < segments; i++) this.tube(pt(i), pt(i + 1), thickness, 6, false);
+    return this;
+  }
+
+  /**
    * A truncated cone from a to b. Lamp shades are cones, not boxes, and the
    * taper is most of what makes a fixture read as a fixture.
    */

@@ -549,6 +549,17 @@ export class RoomScene {
         emissive: [0.30, 0.235, 0.145] });
     add('door', batches.door,
       { ...trimTex, uvScale: 1 / 0.9, tint: [1.1, 1.0, 0.88], rough: 0.45, normalStrength: 0.7 });
+    add('propDark', batches.propDark,
+      { ...metalTex, uvScale: 1 / 0.4, tint: [0.34, 0.33, 0.34], rough: 0.42, normalStrength: 0.3 });
+    // Paper needs a pale texture, not a dark one turned up: multiplying a
+    // near-black albedo by three still leaves it near black.
+    const paperTex = this.texture('paper', () => plasterTexture({ base: '#e7e3d7', seed: 61, strength: 0.07 }));
+    add('paper', batches.paper,
+      { ...paperTex, uvScale: 1 / 0.5, tint: [1, 1, 1], rough: 0.92, normalStrength: 0.2 });
+    // Grille cloth and earpads: a weave at close range, and light enough to
+    // separate from the cabinet it is set into.
+    add('cloth', batches.cloth,
+      { ...fabric, uvScale: 1 / 0.11, tint: [0.3, 0.29, 0.27], rough: 0.98, normalStrength: 0.9 });
     add('rug', batches.rug,
       { ...fabric, uvScale: 1 / 1.1, tint: [0.7, 0.55, 0.46], rough: 0.99, normalStrength: 0.6 });
     add('panelsAlt', batches.panelsAlt,
