@@ -72,8 +72,10 @@ uniform vec3 uAmbientGround;
 uniform vec3 uFogColor;
 uniform float uFogDensity;
 uniform float uExposure;
+uniform float uTonemap;
 
-out vec4 fragColor;
+layout(location = 0) out vec4 fragColor;
+layout(location = 1) out vec4 fragNormal;
 
 /*
  * Ambient occlusion against the six planes of the room. Each axis darkens the
@@ -231,7 +233,14 @@ void main() {
   float fog = 1.0 - exp(-depth * uFogDensity);
   lit = mix(lit, uFogColor, clamp(fog, 0.0, 0.92));
 
-  fragColor = vec4(pow(tonemap(lit * uExposure), vec3(1.0 / 2.2)), uAlpha);
+  // Linear out. The grade happens once on the finished frame, not per
+  // fragment -- unless there is no post chain, in which case do it here.
+  fragColor = uTonemap > 0.5
+    ? vec4(pow(tonemap(lit * uExposure), vec3(1.0 / 2.2)), uAlpha)
+    : vec4(lit, uAlpha);
+  // Geometric normal, not the mapped one: occlusion wants the surface, not
+  // its texture.
+  fragNormal = vec4(normalize(vNormal) * 0.5 + 0.5, 1.0);
 }
 `;
 

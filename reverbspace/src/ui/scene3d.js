@@ -16,8 +16,9 @@ import { MICS_BY_ID, polarGain } from '../core/mics.js';
 import { reflectionPaths, SPEED_OF_SOUND } from '../core/acoustics.js';
 import { buildProgram, DEPTH_VERT, DEPTH_FRAG } from './gl/shaders.js';
 import {
-  MeshBuilder, perspectiveOffset, viewMatrix, multiply, orthographic, lookAt,
+  MeshBuilder, perspectiveOffset, viewMatrix, multiply, orthographic, lookAt, invert4,
 } from './gl/mesh.js';
+import { PostChain } from './gl/post.js';
 import { buildRoom, buildMic } from './gl/room.js';
 import { woodTexture, stoneTexture, fabricTexture, plasterTexture, normalFrom } from './gl/textures.js';
 
@@ -83,9 +84,15 @@ class Camera {
 
   /** Matches the 2D projection below exactly, so overlays line up with the room. */
   viewProj() {
-    return multiply(
-      perspectiveOffset(this.focal, this.w, this.h, this.bias),
-      viewMatrix(this.eye, this.r, this.u, this.f));
+    this.proj = perspectiveOffset(this.focal, this.w, this.h, this.bias);
+    this.view = viewMatrix(this.eye, this.r, this.u, this.f);
+    return multiply(this.proj, this.view);
+  }
+
+  /** Rotation part of the view matrix, for taking world normals to view space. */
+  view3() {
+    const m = this.view;
+    return new Float32Array([m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10]]);
   }
 
   toCam(p) {
@@ -248,6 +255,14 @@ export class RoomScene {
     gl.cullFace(gl.BACK);
     this.aniso = gl.getExtension('EXT_texture_filter_anisotropic');
     this.initShadow();
+    try {
+      this.post = new PostChain(gl);
+      if (!this.post.ok) this.post = null;
+    } catch (err) {
+      // Without it the room still draws, just graded per fragment.
+      this.post = null;
+      this.postError = err.message;
+    }
   }
 
   /** Depth target for the key light. Compared on sample, so the hardware filters. */
@@ -514,7 +529,7 @@ export class RoomScene {
     add('floor', batches.floor, this.materialFor(preset.surfaces.floor));
     add('ceiling', batches.ceiling, this.materialFor(preset.surfaces.ceiling));
     add('trim', batches.trim, { ...trimTex, uvScale: 1 / 1.1, tint: [1, 1, 1], rough: 0.55, normalStrength: 0.8 });
-    add('panels', batches.panels, { ...fabric, uvScale: 1 / 0.55, tint: [1, 1, 1], rough: 0.95, normalStrength: 0.9 });
+    add('panels', batches.panels, { ...fabric, uvScale: 1 / 0.55, tint: [1, 1, 1], rough: 0.95, normalStrength: 0.5 });
     // Velvet: matte, so the shape of each fold does the work rather than a
     // highlight running down it.
     add('drape', batches.drape,
@@ -537,7 +552,7 @@ export class RoomScene {
     add('rug', batches.rug,
       { ...fabric, uvScale: 1 / 1.1, tint: [0.7, 0.55, 0.46], rough: 0.99, normalStrength: 0.6 });
     add('panelsAlt', batches.panelsAlt,
-      { ...fabric, uvScale: 1 / 0.5, tint: [0.66, 0.55, 0.5], rough: 0.95, normalStrength: 0.9 });
+      { ...fabric, uvScale: 1 / 0.5, tint: [0.66, 0.55, 0.5], rough: 0.95, normalStrength: 0.5 });
     add('metal', batches.metal, { ...metalTex, uvScale: 1 / 0.4, tint: [1, 1, 1], rough: 0.3, normalStrength: 0.3 });
     add('decor', batches.decor, { ...metalTex, uvScale: 1 / 0.5, tint: [0.85, 0.8, 0.76], rough: 0.45, normalStrength: 0.3 });
     if (seatTex) add('seats', batches.seats, { ...seatTex, uvScale: 1 / 0.6, tint: [1, 1, 1], rough: 0.95, normalStrength: 0.7 });
@@ -652,7 +667,13 @@ export class RoomScene {
     const gl = this.gl;
     const { w, d, h } = this.state.dims;
     if (this.shadowDirty) this.renderShadow();
-    gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+    if (this.post) {
+      this.post.resize(this.canvas.width, this.canvas.height);
+      this.post.bindScene();
+    } else {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+    }
     const dark = this.state.presetId === 'cathedral' ? [0.026, 0.028, 0.038] : [0.02, 0.022, 0.03];
     gl.clearColor(dark[0], dark[1], dark[2], 1);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
@@ -694,7 +715,8 @@ export class RoomScene {
     // Air does not visibly haze a 7 metre room. Keep it near nothing indoors
     // and let it build only across the length of something like a nave.
     gl.uniform1f(u.uFogDensity, 0.005 + clamp((big - 18) / 2600, 0, 0.019));
-    gl.uniform1f(u.uExposure, 1.05);
+    gl.uniform1f(u.uExposure, this.post ? 1.0 : 1.05);
+    gl.uniform1f(u.uTonemap, this.post ? 0 : 1);
 
     const sun = norm(SUN);
     gl.uniform3f(u.uSunDir, sun.x, sun.y, sun.z);
@@ -738,6 +760,25 @@ export class RoomScene {
       }
     }
     gl.bindVertexArray(null);
+
+    if (this.post) {
+      const big = Math.max(w, d, h);
+      this.post.run({
+        proj: this.cam.proj,
+        invProj: invert4(this.cam.proj),
+        view3: this.cam.view3(),
+        // Scaled to the room: a radius that reads in a booth is invisible in
+        // a nave, and one that suits a nave shades a booth into mud.
+        aoRadius: clamp(big * 0.045, 0.22, 1.4),
+        aoStrength: 0.7,
+        exposure: 1.05,
+        bloomThreshold: 0.85,
+        bloomAmount: 0.55,
+        vignette: 0.28,
+        grain: 0.05,
+        seed: (this.rayClock * 60) % 1000,
+      });
+    }
   }
 
   // --------------------------------------------------------------- 2D layer

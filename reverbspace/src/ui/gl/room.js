@@ -68,6 +68,15 @@ export function buildRoom(state) {
   const eaves = h - rise;
   const ridge = h + rise;
   const win = windowOpening(preset, w, h);
+  // Where the fittings will go. Worked out before the treatment is laid out,
+  // so the treatment can keep out of their way.
+  const lampY = clamp(eaves * 0.58, 1.4, 5.0);
+
+  const doorZ = clamp(d * 0.24, 0.6, d - 1.2);
+  const doorH = Math.min(2.05, h - 0.1);
+  const patchZ = clamp(d * 0.24 + 0.9, 0.5, d - 0.6);
+  const hookY = clamp(h * 0.42, 1.1, 1.9);
+  const sconcesPer = (len) => clamp(Math.round(len / 4.2), 1, 8);
 
   out.floor.quad([0, 0, 0], [0, 0, d], [w, 0, d], [w, 0, 0]);
 
@@ -187,18 +196,74 @@ export function buildRoom(state) {
       { id: 3, len: d, at: (u, v) => [w, v, u], n: [-1, 0, 0], from: (u) => [w - 0.02, 0, u] },
     ];
 
+    /*
+     * Nothing hangs over a window, a door, a lamp or the cable run. Each wall
+     * gets a list of rectangles in its own (along, height) coordinates that the
+     * treatment has to keep out of -- which is why panels were previously
+     * sitting across the control-room glass.
+     */
+    const keepClear = walls.map(() => []);
+    const pad2 = 0.13;
+    if (win) {
+      keepClear[0].push({ u0: win.x0 - pad2, u1: win.x1 + pad2, v0: win.y0 - pad2, v1: win.y1 + pad2 });
+      // The coiled cable lives on the same wall, off to one side.
+      if (h > 2.2 && w > 3) {
+        keepClear[0].push({ u0: w * 0.04, u1: w * 0.36, v0: hookY - 0.62, v1: hookY + 0.32 });
+      }
+    }
+    // Door and patch panel are on x = 0, whose along-axis runs back from z = d.
+    keepClear[2].push({ u0: d - doorZ - 0.7, u1: d - doorZ + 0.7, v0: 0, v1: doorH + 0.2 });
+    keepClear[2].push({ u0: d - patchZ - 0.42, u1: d - patchZ + 0.42, v0: 0.8, v1: 1.65 });
+    // Sconces, mapped from each wall's own parameterisation into this one.
+    // Each fitting wall measures along its own axis; the treatment walls do
+    // not always agree, so map from one to the other.
+    const sconceU = [(a) => a, (a) => w - a, (a) => d - a, (a) => a];
+    walls.forEach((wall, i) => {
+      const n = sconcesPer(wall.len);
+      for (let k = 0; k < n; k++) {
+        const u = sconceU[i](((k + 0.5) / n) * wall.len);
+        keepClear[i].push({ u0: u - 0.34, u1: u + 0.34, v0: lampY - 0.42, v1: lampY + 0.42 });
+      }
+    });
+    // Corners belong to the bass traps.
+    if (kind !== 'drapes' && cov > 0.3) {
+      const r0 = clamp(0.25 + cov * 0.2, 0.25, 0.45) + 0.1;
+      walls.forEach((wall, i) => {
+        keepClear[i].push({ u0: -1, u1: r0, v0: 0, v1: eaves });
+        keepClear[i].push({ u0: wall.len - r0, u1: wall.len + 1, v0: 0, v1: eaves });
+      });
+    }
+    const blocked = (i, u0, u1, v0, v1) => keepClear[i].some(
+      (r) => u0 < r.u1 && u1 > r.u0 && v0 < r.v1 && v1 > r.v0);
+    /** The parts of [u0,u1] left once the reserved spans crossing it are cut out. */
+    const freeRuns = (i, u0, u1, v0, v1) => {
+      const cuts = keepClear[i]
+        .filter((r) => v0 < r.v1 && v1 > r.v0 && r.u1 > u0 && r.u0 < u1)
+        .sort((a, b) => a.u0 - b.u0);
+      const runs = [];
+      let at = u0;
+      for (const c of cuts) {
+        if (c.u0 > at) runs.push([at, Math.min(c.u0, u1)]);
+        at = Math.max(at, c.u1);
+      }
+      if (at < u1) runs.push([at, u1]);
+      return runs.filter(([a, b]) => b - a > 0.4);
+    };
+
     if (kind === 'drapes') {
       // Floor-to-rail curtain across the middle of each wall, on a track.
       const railY = Math.min(eaves - 0.12, h * 0.94);
       for (const wall of walls) {
         const span = wall.len * clamp(cov, 0, 1);
         if (span < 0.4) continue;
-        const u0 = (wall.len - span) / 2;
-        out.drape.curtain(wall.from(u0), wall.from(u0 + span), 0.008, railY, wall.n,
-                          { depth: 0.16, period: 0.32, seed: wall.id * 2.7 });
-        const a = wall.at(u0, railY + 0.06), b = wall.at(u0 + span, railY + 0.06);
-        out.metal.tube([a[0] + wall.n[0] * 0.09, a[1], a[2] + wall.n[2] * 0.09],
-                       [b[0] + wall.n[0] * 0.09, b[1], b[2] + wall.n[2] * 0.09], 0.018, 8);
+        const start = (wall.len - span) / 2;
+        for (const [a0, a1] of freeRuns(wall.id, start, start + span, 0.008, railY)) {
+          out.drape.curtain(wall.from(a0), wall.from(a1), 0.008, railY, wall.n,
+                            { depth: 0.16, period: 0.32, seed: wall.id * 2.7 + a0 });
+          const a = wall.at(a0, railY + 0.06), b = wall.at(a1, railY + 0.06);
+          out.metal.tube([a[0] + wall.n[0] * 0.09, a[1], a[2] + wall.n[2] * 0.09],
+                         [b[0] + wall.n[0] * 0.09, b[1], b[2] + wall.n[2] * 0.09], 0.018, 8);
+        }
       }
     } else if (kind === 'foam') {
       // Wedge tiles, in a block centred on ear height where they get used.
@@ -214,7 +279,9 @@ export function buildRoom(state) {
         const sign = wall.n[0] + wall.n[2];
         for (let c = 0; c < cols; c++) {
           for (let r = 0; r < rows; r++) {
-            const centre = wall.at(u0 + (c + 0.5) * tile, v0 + (r + 0.5) * tile);
+            const cu = u0 + (c + 0.5) * tile, cv = v0 + (r + 0.5) * tile;
+            if (blocked(wall.id, cu - tile / 2, cu + tile / 2, cv - tile / 2, cv + tile / 2)) continue;
+            const centre = wall.at(cu, cv);
             centre[axis] += sign * 0.02;
             out.foam.wedge(centre, tile * 0.98, 0.055, axis, sign);
           }
@@ -236,6 +303,7 @@ export function buildRoom(state) {
               const u = centreU - (cols * cell) / 2 + (c + 0.5) * cell;
               const v = baseV - (rows * cell) / 2 + (r + 0.5) * cell;
               if (u < 0.1 || u > wall.len - 0.1) continue;
+              if (blocked(wall.id, u - cell / 2, u + cell / 2, v - cell / 2, v + cell / 2)) continue;
               const depth = 0.03 + hash(wall.id * 91 + c, r) * 0.16;
               const a = wall.at(u - cell * 0.46, v - cell * 0.46);
               const b = wall.at(u + cell * 0.46, v + cell * 0.46);
@@ -264,6 +332,7 @@ export function buildRoom(state) {
           const u0 = (c / cols) * wall.len + pad, u1 = ((c + 1) / cols) * wall.len - pad;
           const v0 = (r / rows) * eaves + pad, v1 = ((r + 1) / rows) * eaves - pad;
           if (u1 <= u0 || v1 <= v0) continue;
+          if (blocked(wall.id, u0, u1, v0, v1)) continue;
           const a = wall.at(u0, v0), b = wall.at(u1, v1);
           const lo = [Math.min(a[0], b[0]), v0, Math.min(a[2], b[2])];
           const hi = [Math.max(a[0], b[0]), v1, Math.max(a[2], b[2])];
@@ -316,7 +385,6 @@ export function buildRoom(state) {
   }
 
   // ---- fittings ----------------------------------------------------------
-  const lampY = clamp(eaves * 0.58, 1.4, 5.0);
   const along = [
     { len: w, at: (u) => [u, lampY, 0.08], push: [0, 0, 1] },
     { len: w, at: (u) => [u, lampY, d - 0.08], push: [0, 0, -1] },
@@ -324,7 +392,7 @@ export function buildRoom(state) {
     { len: d, at: (u) => [w - 0.08, lampY, u], push: [-1, 0, 0] },
   ];
   for (const wall of along) {
-    const n = clamp(Math.round(wall.len / 4.2), 1, 8);
+    const n = sconcesPer(wall.len);
     for (let i = 0; i < n; i++) {
       const p = wall.at(((i + 0.5) / n) * wall.len);
       // An upright fabric shade on a bracket, open top and bottom -- the shade
@@ -367,8 +435,7 @@ export function buildRoom(state) {
                    [win.x1, win.y1, 0.012], [win.x0, win.y1, 0.012]);
   }
 
-  const doorZ = clamp(d * 0.24, 0.6, d - 1.2);
-  const doorH = Math.min(2.05, h - 0.1);
+
   // Left ajar, with daylight from the corridor coming past it. A room lit
   // entirely by tungsten has nothing for the warmth to read against.
   out.door.box([0.02, 0, doorZ - 0.45], [0.08, doorH, doorZ + 0.28]);
@@ -410,7 +477,6 @@ export function buildRoom(state) {
     out.decor.box([bx - 0.15, 0, bz - 0.15], [bx + 0.14, 0.025, bz + 0.15]);
   }
   if (h > 2.2 && w > 3) {
-    const hookY = clamp(h * 0.42, 1.1, 1.9);
     const rows = 2;
     const per = clamp(Math.round(w / 1.9), 2, 4);
     for (let r0 = 0; r0 < rows; r0++) {
@@ -441,7 +507,7 @@ export function buildRoom(state) {
     out.decor.box(lo, hi);
   }
   // A patch panel by the door.
-  const panelZ = clamp(d * 0.24 + 0.9, 0.5, d - 0.6);
+  const panelZ = patchZ;
   out.decor.box([0.01, 0.9, panelZ - 0.3], [0.07, 1.55, panelZ + 0.3]);
   for (let u = 0; u < 4; u++) {
     out.decor.box([0.07, 1.0 + u * 0.13, panelZ - 0.26], [0.09, 1.08 + u * 0.13, panelZ + 0.26]);
