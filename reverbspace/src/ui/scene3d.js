@@ -495,7 +495,9 @@ export class RoomScene {
       this.computeBounce();
       this.shadowDirty = true;
     }
-    const msig = [s.mic.x.toFixed(3), s.mic.z.toFixed(3), s.mic.height.toFixed(3),
+    // The model is part of the signature: each one is now built as itself, so
+    // choosing a different mic has to rebuild the mesh and not just the maths.
+    const msig = [s.mic.id, s.mic.x.toFixed(3), s.mic.z.toFixed(3), s.mic.height.toFixed(3),
                   s.mic.azimuth.toFixed(3)].join('|');
     if (msig !== this.micSignature) {
       this.micSignature = msig;
@@ -595,15 +597,28 @@ export class RoomScene {
   buildMicBatch() {
     const gl = this.gl;
     if (this.micBatches) for (const b of this.micBatches) b.mesh.dispose();
-    const { body, metal, cable } = buildMic(this.state);
+    const parts = buildMic(this.state);
     const metalTex = this.texture('chrome', () => plasterTexture({ base: '#c9cdd6', seed: 9, strength: 0.13 }));
     const bodyTex = this.texture('micbody', () => plasterTexture({ base: '#9aa3b4', seed: 29, strength: 0.14 }));
-    this.micBatches = [
-      { mesh: metal.upload(gl), material: { ...metalTex, uvScale: 1 / 0.3, tint: [1, 1, 1], rough: 0.26, metal: 1, normalStrength: 0.3 } },
-      { mesh: body.upload(gl), material: { ...bodyTex, uvScale: 1 / 0.2, tint: [1.55, 1.5, 1.42], rough: 0.3, metal: 1, normalStrength: 0.25 } },
-      { name: 'cable', mesh: cable.upload(gl),
-        material: { ...metalTex, uvScale: 1 / 0.2, tint: [0.2, 0.2, 0.22], rough: 0.75, normalStrength: 0.2 } },
-    ];
+    // A headbasket is woven wire: dark, because you are mostly looking through
+    // it, but metal, so it catches a lamp along the weave.
+    const meshTex = this.texture('micmesh', () => plasterTexture({ base: '#6d7482', seed: 47, strength: 0.55 }));
+    const foamTex = this.texture('micfoam', () => fabricTexture({ base: '#26282c', seed: 53 }));
+    const darkTex = this.texture('micdark', () => plasterTexture({ base: '#2a2c30', seed: 51, strength: 0.1 }));
+    const mats = {
+      metal: { ...metalTex, uvScale: 1 / 0.3, tint: [1, 1, 1], rough: 0.26, metal: 1, normalStrength: 0.3 },
+      // Satin nickel, not chrome: brushed hard enough that it picks the room
+      // up as a warm sheen rather than mirroring the timber back at you.
+      body: { ...bodyTex, uvScale: 1 / 0.2, tint: [1.2, 1.2, 1.22], rough: 0.44, metal: 1, normalStrength: 0.25 },
+      grille: { ...meshTex, uvScale: 1 / 0.006, tint: [1.15, 1.15, 1.2], rough: 0.42, metal: 1, normalStrength: 1.0 },
+      dark: { ...darkTex, uvScale: 1 / 0.05, tint: [1, 1, 1], rough: 0.5, normalStrength: 0.3 },
+      foam: { ...foamTex, uvScale: 1 / 0.02, tint: [1, 1, 1], rough: 0.99, normalStrength: 0.8 },
+      cable: { ...metalTex, uvScale: 1 / 0.2, tint: [0.2, 0.2, 0.22], rough: 0.75, normalStrength: 0.2 },
+    };
+    this.micBatches = Object.entries(mats)
+      .filter(([k]) => parts[k] && !parts[k].empty)
+      .map(([k, material]) => ({ name: k === 'cable' ? 'cable' : `mic-${k}`,
+                                 mesh: parts[k].upload(gl), material }));
   }
 
   resize() {

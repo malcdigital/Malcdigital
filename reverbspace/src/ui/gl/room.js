@@ -730,30 +730,241 @@ function buildControlRoom(out, lights, win, w) {
   void w;
 }
 
-/** The mic and its stand, rebuilt whenever it moves. */
+/*
+ * The microphones, each built as the thing it actually is.
+ *
+ * Dimensions are the real ones, from the manufacturers' own sheets: a U 87 is
+ * 56 mm across and 200 mm long, a KM 184 is 22 mm by 107, an SM7B 63.5 by 189,
+ * an R-121 25 by 156, an MKH 416 19 by 250. At a metre away that difference is
+ * most of what you have to go on, and it is worth getting right -- the mic you
+ * pick already changes what you hear, and it should change what you see.
+ *
+ * The mounting matters as much as the body. Half of recognising a mic across a
+ * room is how it is hanging: a large condenser sits nose-out in a spider, an
+ * SM7B is slung in a yoke, a pencil sits in a clip pointing the way it hears.
+ */
+
+/** Where each model's capsule sits, so the acoustics and the picture agree. */
+const MIC_BODIES = {
+  // Neumann U 87: tapered body, squared-off mesh basket, hung in a spider and
+  // facing sideways out of it. 56 x 200 mm.
+  ldc: (out, at, aim) => {
+    // Basket: a wire drum with a domed crown, banded top and bottom. Two
+    // layers, because a U 87's headgrille is two layers and you can see it.
+    for (let i = 0; i < 2; i++) {
+      const r = 0.028 - i * 0.002;
+      out.grille.tube(at(0, 0.052 + i * 0.002, 0), at(0, 0.114 - i * 0.003, 0), r, 18, false);
+    }
+    out.grille.frustum(at(0, 0.114, 0), at(0, 0.126, 0), 0.028, 0.019, 18, false, true);
+    for (const v of [0.056, 0.084, 0.112]) {
+      ringAround(out.body, at(0, v, 0), [0, 1, 0], 0.0284, 0.0016, 18);
+    }
+    out.body.tube(at(0, 0.044, 0), at(0, 0.054, 0), 0.0286, 18);         // collar
+    out.body.frustum(at(0, 0.046, 0), at(0, -0.078, 0), 0.026, 0.023, 16, false, true);
+    // Pattern switch on the front, pad and roll-off on the back.
+    out.dark.orientedBox(at(0, 0.03, 0.021), [1, 0, 0], [0, 1, 0], [0.016, 0.012, 0.004]);
+    out.dark.orientedBox(at(0, -0.02, -0.02), [1, 0, 0], [0, 1, 0], [0.02, 0.016, 0.004]);
+    spider(out, at, 0.03, 0.078);
+    return { cable: at(0, -0.078, 0), aimAt: at(0, 0.084, 0.028), boom: at(0, -0.078, -0.029), aim };
+  },
+
+  // Neumann KM 184: a plain slim cylinder that points at what it is hearing.
+  // 22 x 107 mm, so it is a third the diameter of the U 87 and half as long.
+  sdc: (out, at, aim) => {
+    pencil(out, at(0, 0, -0.054), at(0, 0, 0.053));
+    clip(out, at(0, 0, -0.03), at(0, 0, 1), 0.012);
+    return { cable: at(0, 0, -0.056), aimAt: at(0, 0, 0.053), boom: at(0, -0.043, -0.03), aim };
+  },
+
+  // Shure SM7B: a chunky black barrel lying along its aim, most of the front
+  // buried in foam, slung in a yoke that straddles it. 63.5 x 189 mm.
+  dynamic: (out, at) => {
+    out.dark.tube(at(0, 0, -0.094), at(0, 0, 0.02), 0.032, 18, true);
+    out.dark.tube(at(0, 0, -0.098), at(0, 0, -0.09), 0.026, 16, true);   // rear cap
+    // Windscreen: a fat foam sleeve, wider than the body it sits on.
+    out.foam.tube(at(0, 0, 0.012), at(0, 0, 0.083), 0.038, 20, true);
+    out.dark.orientedBox(at(0, 0.031, -0.05), [0, 0, 1], [0, 1, 0], [0.05, 0.006, 0.03]);
+    yoke(out, at, 0.034, -0.03);
+    return { cable: at(0, 0, -0.1), aimAt: at(0, 0, 0.086), boom: at(0, -0.05, -0.03) };
+  },
+
+  // Royer R-121: a slim nickel cylinder standing upright with a band of mesh
+  // near the top and the ribbon housing bulging out either side of it -- the
+  // "ears" that are the whole of how you know one across a room. 25 x 156 mm.
+  ribbon: (out, at, aim) => {
+    out.body.tube(at(0, -0.072, 0), at(0, 0.05, 0), 0.0125, 16, true);
+    out.grille.tube(at(0, 0.05, 0), at(0, 0.084, 0), 0.013, 16, false);
+    for (const s2 of [-1, 1]) {
+      out.body.tube(at(s2 * 0.012, 0.067, 0), at(s2 * 0.018, 0.067, 0), 0.011, 12, true);
+    }
+    out.body.tube(at(0, 0.082, 0), at(0, 0.09, 0), 0.0125, 16, true);
+    spider(out, at, 0.02, 0.062);
+    return { cable: at(0, -0.072, 0), aimAt: at(0, 0.067, 0.013), boom: at(0, -0.062, -0.024), aim };
+  },
+
+  // Sennheiser MKH 416: a long thin tube, the front two thirds of it the
+  // interference tube with its slots. 19 x 250 mm, and the length is the point.
+  shotgun: (out, at, aim) => {
+    out.body.tube(at(0, 0, -0.125), at(0, 0, -0.04), 0.0095, 14, true);
+    out.grille.tube(at(0, 0, -0.04), at(0, 0, 0.122), 0.0092, 14, true);
+    // The slots down each side, which is what makes it read as an interference
+    // tube rather than a length of pipe.
+    for (let i = 0; i < 11; i++) {
+      const z = -0.028 + i * 0.0132;
+      for (const s2 of [-1, 1]) {
+        out.dark.orientedBox(at(s2 * 0.0088, 0, z), [0, 0, 1], [0, 1, 0], [0.009, 0.006, 0.003]);
+      }
+    }
+    out.body.tube(at(0, 0, -0.128), at(0, 0, -0.12), 0.0105, 14, true);
+    clip(out, at(0, 0, -0.075), at(0, 0, 1), 0.0105);
+    return { cable: at(0, 0, -0.131), aimAt: at(0, 0, 0.124), boom: at(0, -0.042, -0.075), aim };
+  },
+
+  // Two pencils crossed at ninety degrees with their capsules almost touching,
+  // which is the whole trick: one arrival time, two directions.
+  xy: (out, at, aim) => {
+    // The capsules nearly touch at the front and the bodies splay back and
+    // apart at forty-five degrees each. One arrival time, two directions --
+    // that near-coincidence is the whole reason the pattern works, so it has
+    // to be visible.
+    for (const s2 of [-1, 1]) {
+      const c = Math.cos(Math.PI / 4), sn = Math.sin(Math.PI / 4);
+      const L = 0.107;
+      const tip = at(s2 * 0.008, s2 * 0.012, 0.042);
+      pencil(out, at(s2 * 0.008 - s2 * sn * L, s2 * 0.012, 0.042 - c * L), tip);
+    }
+    out.metal.tube(at(-0.055, -0.028, -0.03), at(0.055, -0.028, -0.03), 0.006, 8);
+    for (const s2 of [-1, 1]) {
+      out.metal.tube(at(s2 * 0.05, -0.028, -0.03), at(s2 * 0.05, -0.012, -0.03), 0.005, 8);
+    }
+    out.metal.tube(at(0, -0.028, -0.03), at(0, -0.05, -0.03), 0.007, 8);
+    return { cable: at(0, -0.02, -0.05), aimAt: at(0, 0, 0.042), boom: at(0, -0.05, -0.03), aim };
+  },
+};
+
+const vsub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+const vlen = (a) => Math.hypot(a[0], a[1], a[2]);
+const vnorm = (a) => { const l = vlen(a) || 1; return [a[0] / l, a[1] / l, a[2] / l]; };
+const vcross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const along = (p, dir, t) => [p[0] + dir[0] * t, p[1] + dir[1] * t, p[2] + dir[2] * t];
+
+/**
+ * A ring of tube around an arbitrary axis.
+ *
+ * MeshBuilder's own ring and arcTube only know the three world planes, which
+ * is fine for a lamp but not for a clip round a mic barrel: the barrel points
+ * wherever the mic is aimed, and a ring built in world xy only encircles it
+ * when the mic happens to be facing down z.
+ */
+function ringAround(mesh, centre, axis, r, thickness, segments = 16, from = 0, to = Math.PI * 2) {
+  const a = vnorm(axis);
+  const u = vnorm(vcross(a, Math.abs(a[1]) > 0.9 ? [1, 0, 0] : [0, 1, 0]));
+  const v = vcross(a, u);
+  const pt = (t) => {
+    const ang = from + (to - from) * t;
+    const c = Math.cos(ang) * r, s2 = Math.sin(ang) * r;
+    return [centre[0] + u[0] * c + v[0] * s2,
+            centre[1] + u[1] * c + v[1] * s2,
+            centre[2] + u[2] * c + v[2] * s2];
+  };
+  for (let i = 0; i < segments; i++) mesh.tube(pt(i / segments), pt((i + 1) / segments), thickness, 6, false);
+}
+
+/** A pencil condenser between two points: barrel, ring, short mesh cap. */
+function pencil(out, tail, tip) {
+  const dir = vnorm(vsub(tip, tail));
+  const len = vlen(vsub(tip, tail));
+  out.body.tube(tail, along(tail, dir, len - 0.023), 0.011, 14, true);
+  out.body.tube(along(tail, dir, len - 0.023), along(tail, dir, len - 0.019), 0.0122, 14, false);
+  out.grille.tube(along(tail, dir, len - 0.019), tip, 0.0108, 14, true);
+}
+
+/** The clip a pencil or a shotgun sits in, and its stub down to the boom. */
+function clip(out, centre, axis, r) {
+  ringAround(out.metal, centre, axis, r + 0.005, 0.005, 14, 0.5, Math.PI * 2 - 0.5);
+  out.metal.tube([centre[0], centre[1] - r - 0.005, centre[2]],
+                 [centre[0], centre[1] - r - 0.026, centre[2]], 0.007, 8);
+}
+
+/**
+ * A spider: an outer ring, elastic lines in to the body, a yoke underneath.
+ * It is most of how you know a large condenser from across the room.
+ */
+function spider(out, at, r, drop) {
+  const R = r + 0.028;
+  ringAround(out.metal, at(0, 0.02, 0), [0, 1, 0], R, 0.0028, 22);
+  // Lines alternate high and low on the body, which is what makes a spider a
+  // spider rather than a hoop with spokes.
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2 + 0.39;
+    const v = i % 2 ? 0.05 : -0.012;
+    out.cable.tube(at(Math.cos(a) * R, 0.02, Math.sin(a) * R),
+                   at(Math.cos(a) * r * 0.92, v, Math.sin(a) * r * 0.92), 0.002, 4, false);
+  }
+  // Two arms down off the ring to the swivel, rather than one stub: it is
+  // what stops the ring reading as a plate the mic is standing on.
+  for (const s2 of [-1, 1]) {
+    out.metal.tube(at(s2 * R * 0.72, 0.02, -R * 0.68), at(0, -drop + 0.012, -R * 0.5), 0.0035, 6);
+  }
+  out.metal.tube(at(0, -drop + 0.014, -R * 0.5), at(0, -drop, -R * 0.5), 0.006, 8);
+}
+
+/** The SM7B's yoke: a bracket straddling the barrel with a thumbscrew a side. */
+function yoke(out, at, r, z) {
+  for (const s2 of [-1, 1]) {
+    out.metal.tube(at(s2 * (r + 0.004), 0, z), at(s2 * (r + 0.004), -0.03, z), 0.005, 8);
+    out.metal.tube(at(s2 * (r + 0.004), 0, z), at(s2 * (r + 0.011), 0, z), 0.008, 10);
+  }
+  out.metal.tube(at(-r - 0.004, -0.03, z), at(r + 0.004, -0.03, z), 0.005, 8);
+  out.metal.tube(at(0, -0.03, z), at(0, -0.05, z), 0.008, 10);
+}
+
+/**
+ * The mic and its stand, rebuilt whenever it moves or the model changes.
+ *
+ * Everything is laid out in the mic's own frame: +w points at the performer,
+ * +u across, +v up. A large condenser and a ribbon stand upright and listen
+ * out of their side; a pencil, a dynamic and a shotgun lie along their aim.
+ */
 export function buildMic(state) {
-  const body = new MeshBuilder();
-  const metal = new MeshBuilder();
-  const cable = new MeshBuilder();
+  const out = {
+    body: new MeshBuilder(),
+    dark: new MeshBuilder(),
+    foam: new MeshBuilder(),
+    grille: new MeshBuilder(),
+    metal: new MeshBuilder(),
+    cable: new MeshBuilder(),
+  };
   const m = { x: state.mic.x, y: state.mic.height, z: state.mic.z };
   const az = state.mic.azimuth;
   const fx = Math.sin(az), fz = Math.cos(az);
+  const at = (u, v, w) => [m.x + fz * u + fx * w, m.y + v, m.z - fx * u + fz * w];
 
+  const build = MIC_BODIES[state.mic.id] || MIC_BODIES.ldc;
+  const rig = build(out, at, az);
+
+  // Stand: tripod, column straight up to just under the mount, and a short
+  // link across to it. Stopping the column 280 mm short and reaching up with
+  // a boom left a fat pale bar leaning across the shot at nothing.
+  const foot = rig.boom;
+  const neck = Math.max(0.12, foot[1] - 0.055);
   for (let i = 0; i < 3; i++) {
     const a = az + (i / 3) * Math.PI * 2 + 0.6;
-    metal.tube([m.x, 0.06, m.z], [m.x + Math.sin(a) * 0.32, 0.02, m.z + Math.cos(a) * 0.32], 0.014, 6);
+    // Folding legs, thinner than the column they fold under. At 28 mm across
+    // one pointing at the camera was the fattest thing in the frame.
+    out.metal.tube([m.x, 0.055, m.z], [m.x + Math.sin(a) * 0.32, 0.016, m.z + Math.cos(a) * 0.32], 0.006, 6);
   }
-  const neck = Math.max(0.12, m.y - 0.24);
-  metal.tube([m.x, 0.04, m.z], [m.x, neck, m.z], 0.019, 10);
-  metal.tube([m.x, neck, m.z], [m.x - fx * 0.06, m.y, m.z - fz * 0.06], 0.013, 8);
+  // A K&M column is 25 mm across and its boom arm is smaller again. At 38 and
+  // 26 the rig read as scaffolding and drew the eye off the mic on it.
+  out.metal.tube([m.x, 0.04, m.z], [m.x, neck, m.z], 0.0125, 12);
+  out.metal.tube([m.x, neck, m.z], foot, 0.009, 8);
 
-  body.tube([m.x - fx * 0.06, m.y, m.z - fz * 0.06], [m.x + fx * 0.04, m.y, m.z + fz * 0.04], 0.027, 14);
-  body.tube([m.x + fx * 0.04, m.y, m.z + fz * 0.04], [m.x + fx * 0.1, m.y, m.z + fz * 0.1], 0.034, 14);
-
-  // Cable: down the stand, then a slack run along the floor to the near wall.
+  // Cable: out of the base of the mic, down the stand, then a slack run along
+  // the floor to the nearest wall.
   const { w, d } = state.dims;
-  cable.tube([m.x - fx * 0.06, m.y - 0.03, m.z - fz * 0.06], [m.x + 0.02, neck, m.z], 0.008, 5, false);
-  cable.tube([m.x + 0.02, neck, m.z], [m.x + 0.03, 0.03, m.z + 0.02], 0.008, 5, false);
+  const tail = rig.cable;
+  out.cable.tube(tail, [m.x + 0.015, neck, m.z], 0.0032, 5, false);
+  out.cable.tube([m.x + 0.015, neck, m.z], [m.x + 0.03, 0.03, m.z + 0.02], 0.0032, 5, false);
   const toWall = [
     { p: [m.x, 0.012, 0.05], dist: m.z },
     { p: [m.x, 0.012, d - 0.05], dist: d - m.z },
@@ -772,8 +983,8 @@ export function buildMic(state) {
       lerp(from[2], toWall.p[2], 1 / (steps - i + 1)) + (i < steps ? sway * 0.3 : 0),
     ];
     const end = i === steps ? toWall.p : to;
-    cable.tube(from, end, 0.009, 5, false);
+    out.cable.tube(from, end, 0.0038, 5, false);
     from = end;
   }
-  return { body, metal, cable };
+  return out;
 }

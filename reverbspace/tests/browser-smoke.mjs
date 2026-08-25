@@ -250,6 +250,22 @@ check('the lens focuses on the mic, and a close mic softens the room',
   far.detail > near.detail * 1.15,
   `detail ${near.detail.toFixed(2)} at 0.5 m -> ${far.detail.toFixed(2)} at 4 m`);
 
+// Each mic is now modelled as the thing it actually is -- a U 87 basket, an
+// SM7B in its yoke, a 250 mm shotgun tube -- so choosing one has to rebuild
+// the mesh and not just the maths. The rebuild key left the model out at
+// first, and every mic quietly drew as whichever one loaded first.
+const micMeshes = {};
+for (const id of ['ldc', 'sdc', 'dynamic', 'ribbon', 'shotgun', 'xy']) {
+  await page.selectOption('#mic-type', id);
+  await page.waitForTimeout(350);
+  micMeshes[id] = await page.evaluate(() => window.reverbspace.scene.micBatches
+    .reduce((n, b) => n + b.mesh.count, 0));
+}
+const counts = Object.values(micMeshes);
+check('every mic is built as itself',
+  new Set(counts).size === counts.length,
+  Object.entries(micMeshes).map(([k, v]) => `${k} ${v}`).join(', '));
+
 await browser.close();
 
 const failed = results.filter((r) => !r.pass);
