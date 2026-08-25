@@ -112,6 +112,17 @@ export class ReverbEngine {
     this.shelfHighA = onePole(3000, sampleRate);
     this.lateZl = [0, 0];
     this.lateZh = [0, 0];
+    // The room's own resonances, below the frequency where they stop
+    // overlapping. Mono: a mode is a pressure field and the mic is one point
+    // in it, so there is nothing to be wide about.
+    this.modes = [];
+    this.modeDcX = 0;
+    this.modeDcY = 0;
+    // One-pole high-pass on the tail, so the delay network stops competing
+    // with the modes for the bottom end.
+    this.lateHpA = 0;
+    this.lateHpX = [0, 0];
+    this.lateHpY = [0, 0];
     this.width = 1;
 
     this.dip = 1;
@@ -216,11 +227,27 @@ export class ReverbEngine {
       design.late.diffusers.forEach((d, i) => { this.diffusers[i].coef = d.coef; });
     }
 
+    // Retuning a resonator mid-ring is a click, so each new one keeps the
+    // state of whichever old one was nearest in frequency and carries its
+    // ring on rather than restarting it.
+    const wasRinging = this.modes;
+    this.modes = (design.modes || []).map((m) => {
+      let near = null, best = Infinity;
+      for (const o of wasRinging) {
+        const gap = Math.abs(Math.log2(o.freq / m.freq));
+        if (gap < best) { best = gap; near = o; }
+      }
+      const keep = near && best < 0.5;
+      return { ...m, z1: keep ? near.z1 : 0, z2: keep ? near.z2 : 0 };
+    });
+
     this.lateDelay = clamp(design.late.predelaySamples, 1, this.mask - 4);
     this.lateGainL = design.late.gainL;
     this.lateGainR = design.late.gainR;
     this.lateLowK = design.late.low - 1;
     this.lateHighK = design.late.high - 1;
+    const hp = design.late.highPassHz || 0;
+    this.lateHpA = hp > 0 ? 1 / (1 + (2 * Math.PI * hp) / fs) : 0;
 
     // Mic tone across everything the capsule hears; proximity on the direct
     // path only, because that is where the near-field lift actually happens.
@@ -275,6 +302,11 @@ export class ReverbEngine {
     for (const b of [...this.toneL, ...this.toneR, ...this.proxL, ...this.proxR]) resetBiquad(b);
     this.lateZl = [0, 0];
     this.lateZh = [0, 0];
+    for (const m of this.modes) { m.z1 = 0; m.z2 = 0; }
+    this.modeDcX = 0;
+    this.modeDcY = 0;
+    this.lateHpX = [0, 0];
+    this.lateHpY = [0, 0];
     this.dcZ = [0, 0];
     this.dcY = [0, 0];
     this.peak = 0;
@@ -412,9 +444,41 @@ export class ReverbEngine {
         this.lateZh[1] += (1 - this.shelfHighA) * (lr - this.lateZh[1]);
         lr += this.lateHighK * (lr - this.lateZh[1]);
 
+        if (this.lateHpA > 0) {
+          const yl = this.lateHpA * (this.lateHpY[0] + ll - this.lateHpX[0]);
+          const yr = this.lateHpA * (this.lateHpY[1] + lr - this.lateHpX[1]);
+          this.lateHpX[0] = ll; this.lateHpX[1] = lr;
+          this.lateHpY[0] = yl; this.lateHpY[1] = yr;
+          ll = yl; lr = yr;
+        }
+
         ll *= this.lateGainL * this.dip;
         lr *= this.lateGainR * this.dip;
       }
+
+      // --- the room's own modes --------------------------------------------
+      // Excited straight off the source: a standing wave starts ringing when
+      // the sound reaches it, not after the field has gone diffuse.
+      if (this.modes.length) {
+        let mo = 0;
+        for (let k = 0; k < this.modes.length; k++) {
+          const md = this.modes[k];
+          const y = md.b0 * x + md.a1 * md.z1 + md.a2 * md.z2;
+          md.z2 = md.z1;
+          md.z1 = y;
+          mo += y;
+        }
+        // One shared DC blocker for the whole bank: an all-pole resonator has
+        // a little gain left at nothing per second, and sixteen of them would
+        // otherwise walk the tail off centre.
+        const dcOut = 0.999 * (this.modeDcY + mo - this.modeDcX);
+        this.modeDcX = mo;
+        this.modeDcY = dcOut;
+        mo = dcOut * this.dip;
+        ll += mo;
+        lr += mo;
+      }
+
 
       if (this.dipDir !== 0) {
         this.dip += this.dipDir / this.dipSamples;

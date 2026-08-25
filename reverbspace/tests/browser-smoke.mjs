@@ -49,7 +49,14 @@ const PAGE = process.env.PAGE_URL || `${BASE}/index.html`;
 await page.goto(PAGE, { waitUntil: 'networkidle' });
 await page.waitForTimeout(600);
 await page.mouse.click(700, 400);
-await page.waitForTimeout(1200);
+// Starting audio is asynchronous -- the worklet has to load -- so wait for the
+// overlay to actually go rather than guessing how long that takes. Bounded, so
+// a page that never starts still fails the check below rather than hanging.
+await page.waitForFunction(
+  () => document.querySelector('#overlay').classList.contains('gone'),
+  null, { timeout: 8000 },
+).catch(() => {});
+await page.waitForTimeout(400);
 
 /** How much of the room canvas is actually painted. */
 const painted = () => page.evaluate(() => {
@@ -342,6 +349,43 @@ const stopped = await page.evaluate(() => ({
 }));
 check('Stop stops it, and goes back to dimmed',
   !stopped.playing && !stopped.stopEnabled, JSON.stringify(stopped));
+
+// The room's own resonances, and tuning them to a key. This is the one place
+// the size control's effect on pitch is stated out loud, so it has to be true.
+await page.click('.preset[data-id="studio"]');
+await page.waitForTimeout(500);
+const tuneTo = (pc) => page.evaluate(async (v) => {
+  const sel = document.querySelector('#key');
+  sel.value = String(v);
+  sel.dispatchEvent(new Event('change', { bubbles: true }));
+  document.querySelector('#tune').click();
+  await new Promise((r) => setTimeout(r, 400));
+  const m = await import('/src/core/modes.js');
+  const rs = window.reverbspace;
+  const note = m.roomNote(rs.state, rs.response.decay);
+  return { midi: m.noteOf(note.f).midi, f: note.f, scale: rs.state.scale,
+           text: document.querySelector('#mode-note').textContent };
+}, pc);
+const toA = await tuneTo(9);
+const toD = await tuneTo(2);
+check('tuning the room lands its note on the key',
+  toA.midi % 12 === 9 && toD.midi % 12 === 2,
+  `A -> ${toA.f.toFixed(1)}Hz @ ${(toA.scale * 100).toFixed(0)}%, `
+  + `D -> ${toD.f.toFixed(1)}Hz @ ${(toD.scale * 100).toFixed(0)}%`);
+check('tuning works by resizing the room', Math.abs(toA.scale - toD.scale) > 0.02,
+  `${toA.scale.toFixed(3)} vs ${toD.scale.toFixed(3)}`);
+check('the readout names the note', /Rings at .* Hz/.test(toA.text), toA.text);
+
+// A cathedral has no note to tune, and says so rather than inventing one.
+await page.click('.preset[data-id="cathedral"]');
+await page.waitForFunction(() => window.reverbspace.state.presetId === 'cathedral'
+  && window.reverbspace.response.decay.schroeder < 40, null, { timeout: 4000 }).catch(() => {});
+await page.waitForTimeout(400);
+const big = await page.evaluate(() => ({
+  text: document.querySelector('#mode-note').textContent,
+  disabled: document.querySelector('#tune').disabled,
+}));
+check('a cathedral is too big to ring at a note', big.disabled && /Too big/.test(big.text), big.text);
 
 await browser.close();
 

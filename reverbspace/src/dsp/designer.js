@@ -6,10 +6,15 @@
 
 import { BANDS } from '../core/materials.js';
 import { primeAtMost, onePole, onePoleMag } from './filters.js';
+import { roomModes } from '../core/modes.js';
 
 const LOW_SHELF_HZ = 250;
 const HIGH_SHELF_HZ = 3000;
 const LINES = 16;
+const MAX_MODES = 16;
+// Calibrated against the tail-level test: enough ring to hear the room's note,
+// not so much that the low band overshoots the diffuse field it belongs to.
+const MODE_LEVEL = 9.0;
 
 const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
 
@@ -52,6 +57,44 @@ export function fitBands(bands) {
     low: clamp(Math.abs(bands[0]) / mag, 0.02, 8),
     high: clamp(Math.abs(bands[5]) / mag, 0.02, 8),
   };
+}
+
+/**
+ * The room's discrete resonances, as a bank of two-pole resonators.
+ *
+ * A feedback delay network makes a smooth tail by construction -- that is the
+ * whole point of one -- so it cannot produce the separate, audible modes a
+ * small room has below its Schroeder frequency. Those are the boxy ring you
+ * cannot mix your way out of, and they are most of why a booth sounds like a
+ * booth. Each one is rendered as what it is: a resonance at the mode's own
+ * frequency, decaying at the reverberation time for that frequency, at the
+ * level the standing wave reaches between the performer and the mic.
+ *
+ * All-pole, normalised to unit peak gain. The obvious form -- a zero at DC and
+ * one at Nyquist -- turns out to be wrong here: those zeros lift the skirt by
+ * 6 dB an octave, leaving only 6 dB of roll-off above resonance instead of 12,
+ * and sixteen such skirts sum coherently three octaves up. That put three
+ * decibels of extra tail at 500 Hz in a room whose highest mode is at 171.
+ * DC is dealt with once, on the sum, rather than sixteen times.
+ */
+function designModes(response, fs, level) {
+  const modes = roomModes(response.state, response.decay, MAX_MODES);
+  if (!modes.length) return [];
+  // Share the level out over however many are ringing, so a room with twenty
+  // modes does not come out twenty times louder than a room with two.
+  const spread = level * MODE_LEVEL / Math.sqrt(modes.length);
+  return modes.map((m) => {
+    // A resonance that decays 60 dB in rt has this half-power bandwidth.
+    const bw = clamp(2.2 / m.rt, 0.4, 60);
+    const r = Math.exp((-Math.PI * bw) / fs);
+    const w = (2 * Math.PI * m.f) / fs;
+    return {
+      a1: 2 * r * Math.cos(w),
+      a2: -(r * r),
+      b0: (1 - r) * Math.sqrt(1 - 2 * r * Math.cos(2 * w) + r * r) * m.gain * spread,
+      freq: m.f,
+    };
+  });
 }
 
 /** Sign patterns for feeding and tapping the delay network. */
@@ -187,8 +230,15 @@ export function designReverb(response, sampleRate, opts = {}) {
       gainR: scale * tailLevel,
       low: lateFit.low,
       high: lateFit.high,
+      // Hand the bottom to the modes. Well below the Schroeder frequency the
+      // field is not diffuse and the delay network has no business pretending
+      // otherwise; leaving both in would just sum two accounts of the same
+      // energy. Kept under the lowest octave band the surface model describes,
+      // so this only clears the region the band model never reached.
+      highPassHz: response.decay.schroeder > 40 ? clamp(response.decay.schroeder * 0.55, 20, 75) : 0,
       width,
     },
+    modes: designModes(response, fs, tailLevel * scale),
     micToneDb: response.micTone.slice(),
     proximityDb: response.proximity.slice(),
     shelfHz: { low: LOW_SHELF_HZ, high: HIGH_SHELF_HZ },

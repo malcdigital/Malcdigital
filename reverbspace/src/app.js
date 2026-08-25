@@ -8,6 +8,7 @@ import {
 import { PRESETS, PRESETS_BY_ID } from './core/presets.js';
 import { TREATMENTS } from './core/materials.js';
 import { STAGES, MAX_STAGE } from './core/treatment.js';
+import { NOTE_NAMES, roomNote, roomModes, scaleForNote } from './core/modes.js';
 import { MICS, MICS_BY_ID } from './core/mics.js';
 import { designReverb } from './dsp/designer.js';
 import { AudioEngine, TEST_SOURCES } from './audio/engine.js';
@@ -16,6 +17,8 @@ import { drawEchogram, drawDecay } from './ui/ir-view.js';
 
 const $ = (id) => document.getElementById(id);
 const clampStage = (v) => Math.max(0, Math.min(MAX_STAGE, Math.round(v ?? 0)));
+/** Just the note name, for the second and third modes in the readout. */
+const noteLabelOf = (f) => `${NOTE_NAMES[((Math.round(69 + 12 * Math.log2(f / 440)) % 12) + 12) % 12]}`;
 const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
 
 const audio = new AudioEngine();
@@ -69,12 +72,21 @@ function boot() {
   resize();
 
   let last = performance.now();
+  let complained = 0;
   const frame = (now) => {
     const dt = Math.min(60, now - last);
     last = now;
-    if (dirty) { recompute(); dirty = false; }
-    scene.render(dt);
-    updateMeters();
+    // Anything that throws in here used to take the whole application with it:
+    // the rescheduling call sits at the end, so one bad frame meant no more
+    // frames, ever, and an interface that had quietly stopped being live
+    // without saying so. Keep going, and say what happened the first few times.
+    try {
+      if (dirty) { recompute(); dirty = false; }
+      scene.render(dt);
+      updateMeters();
+    } catch (err) {
+      if (complained++ < 3) console.error('frame failed:', err);
+    }
     requestAnimationFrame(frame);
   };
   requestAnimationFrame(frame);
@@ -177,6 +189,26 @@ function recompute() {
   if (audio.ready) audio.sendDesign(designReverb(response, audio.ctx.sampleRate));
   drawViews();
   drawStats();
+  drawRoomNote();
+}
+
+/**
+ * What the room rings at. Small rooms have a note you can hear; big ones have
+ * modes too low and too close together to be one, and say so.
+ *
+ * Belongs here and not in syncInputs: that runs before the room is reanalysed,
+ * so it would be reading the previous room's decay to describe this one -- and
+ * a cathedral measured against a studio's Schroeder frequency confidently
+ * reported a B flat.
+ */
+function drawRoomNote() {
+  const note = roomNote(state, response.decay);
+  const modes = roomModes(state, response.decay, 3);
+  $('mode-note').textContent = note
+    ? `Rings at ${note.f.toFixed(1)} Hz — ${note.label}`
+      + (modes.length > 1 ? `, then ${modes.slice(1).map((m) => noteLabelOf(m.f)).join(' and ')}` : '')
+    : 'Too big to ring at a note — its modes are below hearing and packed too close to hear apart.';
+  $('tune').disabled = !note;
 }
 
 function drawViews() {
@@ -241,6 +273,8 @@ function buildSelects() {
   $('treat-type').innerHTML = Object.entries(TREATMENTS)
     .map(([id, t]) => `<option value="${id}">${t.name}</option>`).join('');
   $('mic-type').innerHTML = MICS.map((m) => `<option value="${m.id}">${m.name}</option>`).join('');
+  $('key').innerHTML = NOTE_NAMES.map((n, i) => `<option value="${i}">${n}</option>`).join('');
+  $('key').value = '9';        // A, for want of anywhere better to start
 }
 
 function applyPreset(id, quiet = false) {
@@ -315,6 +349,19 @@ function bindControls() {
   });
 
   on('treat', 'input', (e) => { state.treatment.stage = +e.target.value; syncInputs(); dirty = true; });
+  // Tune the room to the key. Mode frequencies go as one over length and the
+  // size control scales every dimension together, so this is just a size
+  // change -- which is exactly why the size already moves the pitch.
+  on('tune', 'click', () => {
+    const p = PRESETS_BY_ID[state.presetId];
+    const hit = scaleForNote(state, response.decay, +$('key').value, p.sizeRange);
+    if (!hit) return;
+    setScale(state, hit.scale);
+    scene.framed = false;
+    syncInputs();
+    dirty = true;
+  });
+
   on('reset-places', 'click', () => {
     resetPlacement(state);
     scene.lookAtMic();
