@@ -739,3 +739,11 @@ quantdesk/
   survived it — but a holdout is spent by looking at it, and it counts your
   looks for that reason. Data that did not exist when the rules were written is
   the only check that cannot be gamed.
+
+---
+
+## Also in this repo
+
+- **[`webslinger/`](webslinger/)** — unrelated to the trading desk. A
+  first-person web-swinging prototype for Unreal Engine 5: a real rope
+  constraint, wall-crawling, and a generated greybox city to test them in.

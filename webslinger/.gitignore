@@ -1,0 +1,17 @@
+# Unreal build and editor artifacts
+Binaries/
+Build/
+DerivedDataCache/
+Intermediate/
+Saved/
+.vs/
+.vscode/
+.idea/
+*.sln
+*.suo
+*.xcodeproj/
+*.xcworkspace/
+
+# Content is binary and belongs in LFS or out of the repo entirely.
+# Delete this line once you have set up Git LFS for .uasset/.umap.
+Content/
