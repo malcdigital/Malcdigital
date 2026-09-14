@@ -2,10 +2,13 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/Character.h"
+#include "InputActionValue.h"
 #include "WebSlingerCharacter.generated.h"
 
 class UCableComponent;
 class UCameraComponent;
+class UInputAction;
+class UInputMappingContext;
 class UWebShooterComponent;
 class UWebSlingerMovementComponent;
 
@@ -40,6 +43,7 @@ public:
 	/** Gamepad look rates, degrees per second. */
 	UPROPERTY(EditDefaultsOnly, Category = "Camera") float TurnRateDegrees = 140.f;
 	UPROPERTY(EditDefaultsOnly, Category = "Camera") float LookRateDegrees = 110.f;
+	UPROPERTY(EditDefaultsOnly, Category = "Camera") float MouseSensitivity = 1.f;
 
 	/** How far around to look for something to cling to when crawl is held. */
 	UPROPERTY(EditDefaultsOnly, Category = "Wall Crawl") float CrawlSearchDistance = 120.f;
@@ -52,19 +56,22 @@ protected:
 	virtual void BeginPlay() override;
 	virtual void SetupPlayerInputComponent(class UInputComponent* PlayerInputComponent) override;
 
-	void MoveForward(float Value);
-	void MoveRight(float Value);
-	void Turn(float Value);
-	void LookUp(float Value);
-	void TurnAtRate(float Value);
-	void LookUpAtRate(float Value);
-	void Reel(float Value);
+	void OnMoveForward(const FInputActionValue& Value);
+	void OnMoveRight(const FInputActionValue& Value);
+	void OnTurn(const FInputActionValue& Value);
+	void OnLookUp(const FInputActionValue& Value);
+	void OnTurnRate(const FInputActionValue& Value);
+	void OnLookUpRate(const FInputActionValue& Value);
+	void OnReel(const FInputActionValue& Value);
+	void OnReelReleased();
 
 	void OnFireWebPressed();
 	void OnFireWebReleased();
 	void OnZipPressed();
 	void OnWallCrawlPressed();
 	void OnWallCrawlReleased();
+	void OnJumpPressed();
+	void OnJumpReleased();
 
 	/** Sweep the surroundings for a clingable face. Camera direction wins ties. */
 	bool TryStartWallCrawl();
@@ -75,6 +82,26 @@ private:
 	UPROPERTY(VisibleAnywhere, Category = "Camera") TObjectPtr<UCameraComponent> Camera;
 	UPROPERTY(VisibleAnywhere, Category = "Web") TObjectPtr<UWebShooterComponent> WebShooter;
 	UPROPERTY(VisibleAnywhere, Category = "Web") TObjectPtr<UCableComponent> WebCable;
+
+	// Enhanced Input actions and their mapping context are built in C++ rather
+	// than authored as .uasset files, so the project stays text-only and builds
+	// straight from a clone. See BuildInputAssets().
+	UPROPERTY(Transient) TObjectPtr<UInputMappingContext> InputContext;
+	UPROPERTY(Transient) TObjectPtr<UInputAction> ActMoveForward;
+	UPROPERTY(Transient) TObjectPtr<UInputAction> ActMoveRight;
+	UPROPERTY(Transient) TObjectPtr<UInputAction> ActTurn;
+	UPROPERTY(Transient) TObjectPtr<UInputAction> ActLookUp;
+	UPROPERTY(Transient) TObjectPtr<UInputAction> ActTurnRate;
+	UPROPERTY(Transient) TObjectPtr<UInputAction> ActLookUpRate;
+	UPROPERTY(Transient) TObjectPtr<UInputAction> ActReel;
+	UPROPERTY(Transient) TObjectPtr<UInputAction> ActFireWeb;
+	UPROPERTY(Transient) TObjectPtr<UInputAction> ActZip;
+	UPROPERTY(Transient) TObjectPtr<UInputAction> ActJump;
+	UPROPERTY(Transient) TObjectPtr<UInputAction> ActWallCrawl;
+
+	/** Idempotent; called from both BeginPlay and SetupPlayerInputComponent. */
+	void BuildInputAssets();
+	void ApplyMappingContext();
 
 	bool bWantsToCrawl = false;
 	float CurrentRoll = 0.f;

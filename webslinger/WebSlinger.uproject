@@ -1,6 +1,6 @@
 {
 	"FileVersion": 3,
-	"EngineAssociation": "5.5",
+	"EngineAssociation": "5.6",
 	"Category": "",
 	"Description": "First-person web-swinging traversal prototype.",
 	"Modules": [
@@ -16,6 +16,10 @@
 	"Plugins": [
 		{
 			"Name": "CableComponent",
+			"Enabled": true
+		},
+		{
+			"Name": "EnhancedInput",
 			"Enabled": true
 		}
 	]

@@ -4,7 +4,14 @@
 #include "Camera/CameraComponent.h"
 #include "Components/CapsuleComponent.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "EnhancedInputComponent.h"
+#include "EnhancedInputSubsystems.h"
+#include "Engine/LocalPlayer.h"
 #include "Engine/World.h"
+#include "GameFramework/PlayerController.h"
+#include "InputAction.h"
+#include "InputMappingContext.h"
+#include "InputModifiers.h"
 #include "WebShooterComponent.h"
 #include "WebSlingerMovementComponent.h"
 
@@ -52,10 +59,14 @@ AWebSlingerCharacter::AWebSlingerCharacter(const FObjectInitializer& ObjectIniti
 void AWebSlingerCharacter::BeginPlay()
 {
 	Super::BeginPlay();
+
 	if (WebShooter)
 	{
 		WebShooter->SetCable(WebCable);
 	}
+
+	BuildInputAssets();
+	ApplyMappingContext();
 }
 
 UWebSlingerMovementComponent* AWebSlingerCharacter::GetSlingerMovement() const
@@ -64,34 +75,146 @@ UWebSlingerMovementComponent* AWebSlingerCharacter::GetSlingerMovement() const
 }
 
 // ---------------------------------------------------------------------------
-// Input
+// Input setup
+//
+// Enhanced Input normally wants an InputMappingContext and one InputAction per
+// binding, all as .uasset files. Those are binary and cannot live in a text
+// repository, so they are constructed here instead. Identical behaviour, and
+// the project still builds from a bare clone with no content folder.
 // ---------------------------------------------------------------------------
+
+namespace
+{
+	/** Create a runtime InputAction of the given value type. */
+	UInputAction* MakeAction(UObject* Outer, EInputActionValueType Type, const TCHAR* Name)
+	{
+		UInputAction* Action = NewObject<UInputAction>(Outer, Name);
+		Action->ValueType = Type;
+		return Action;
+	}
+
+	/** Map a key, optionally inverted - W/S and A/D share one axis each. */
+	void Map(UInputMappingContext* Context, UInputAction* Action, const FKey& Key, bool bNegate = false)
+	{
+		FEnhancedActionKeyMapping& Mapping = Context->MapKey(Action, Key);
+		if (bNegate)
+		{
+			Mapping.Modifiers.Add(NewObject<UInputModifierNegate>(Context));
+		}
+	}
+}
+
+void AWebSlingerCharacter::BuildInputAssets()
+{
+	if (InputContext)
+	{
+		return;
+	}
+
+	InputContext = NewObject<UInputMappingContext>(this, TEXT("WebSlingerMappingContext"));
+
+	ActMoveForward = MakeAction(this, EInputActionValueType::Axis1D, TEXT("IA_MoveForward"));
+	ActMoveRight   = MakeAction(this, EInputActionValueType::Axis1D, TEXT("IA_MoveRight"));
+	ActTurn        = MakeAction(this, EInputActionValueType::Axis1D, TEXT("IA_Turn"));
+	ActLookUp      = MakeAction(this, EInputActionValueType::Axis1D, TEXT("IA_LookUp"));
+	ActTurnRate    = MakeAction(this, EInputActionValueType::Axis1D, TEXT("IA_TurnRate"));
+	ActLookUpRate  = MakeAction(this, EInputActionValueType::Axis1D, TEXT("IA_LookUpRate"));
+	ActReel        = MakeAction(this, EInputActionValueType::Axis1D, TEXT("IA_Reel"));
+	ActFireWeb     = MakeAction(this, EInputActionValueType::Boolean, TEXT("IA_FireWeb"));
+	ActZip         = MakeAction(this, EInputActionValueType::Boolean, TEXT("IA_Zip"));
+	ActJump        = MakeAction(this, EInputActionValueType::Boolean, TEXT("IA_Jump"));
+	ActWallCrawl   = MakeAction(this, EInputActionValueType::Boolean, TEXT("IA_WallCrawl"));
+
+	Map(InputContext, ActMoveForward, EKeys::W);
+	Map(InputContext, ActMoveForward, EKeys::S, /*bNegate*/ true);
+	Map(InputContext, ActMoveForward, EKeys::Gamepad_LeftY);
+	Map(InputContext, ActMoveRight, EKeys::D);
+	Map(InputContext, ActMoveRight, EKeys::A, /*bNegate*/ true);
+	Map(InputContext, ActMoveRight, EKeys::Gamepad_LeftX);
+
+	// Mouse deltas are already frame-scaled; stick values are not, so they get
+	// their own actions and are multiplied by delta time in the handlers.
+	Map(InputContext, ActTurn, EKeys::MouseX);
+	Map(InputContext, ActLookUp, EKeys::MouseY, /*bNegate*/ true);
+	Map(InputContext, ActTurnRate, EKeys::Gamepad_RightX);
+	Map(InputContext, ActLookUpRate, EKeys::Gamepad_RightY);
+
+	Map(InputContext, ActReel, EKeys::MouseWheelAxis);
+	Map(InputContext, ActReel, EKeys::E);
+	Map(InputContext, ActReel, EKeys::Q, /*bNegate*/ true);
+
+	Map(InputContext, ActFireWeb, EKeys::LeftMouseButton);
+	Map(InputContext, ActFireWeb, EKeys::Gamepad_RightTrigger);
+	Map(InputContext, ActZip, EKeys::RightMouseButton);
+	Map(InputContext, ActZip, EKeys::Gamepad_LeftTrigger);
+	Map(InputContext, ActJump, EKeys::SpaceBar);
+	Map(InputContext, ActJump, EKeys::Gamepad_FaceButton_Bottom);
+	Map(InputContext, ActWallCrawl, EKeys::LeftShift);
+	Map(InputContext, ActWallCrawl, EKeys::Gamepad_LeftShoulder);
+}
+
+void AWebSlingerCharacter::ApplyMappingContext()
+{
+	const APlayerController* PC = Cast<APlayerController>(GetController());
+	if (!PC || !InputContext)
+	{
+		return;
+	}
+
+	if (UEnhancedInputLocalPlayerSubsystem* Subsystem =
+			ULocalPlayer::GetSubsystem<UEnhancedInputLocalPlayerSubsystem>(PC->GetLocalPlayer()))
+	{
+		Subsystem->AddMappingContext(InputContext, 0);
+	}
+}
 
 void AWebSlingerCharacter::SetupPlayerInputComponent(UInputComponent* PlayerInputComponent)
 {
 	Super::SetupPlayerInputComponent(PlayerInputComponent);
-	check(PlayerInputComponent);
 
-	PlayerInputComponent->BindAxis("MoveForward", this, &AWebSlingerCharacter::MoveForward);
-	PlayerInputComponent->BindAxis("MoveRight", this, &AWebSlingerCharacter::MoveRight);
-	PlayerInputComponent->BindAxis("Turn", this, &AWebSlingerCharacter::Turn);
-	PlayerInputComponent->BindAxis("LookUp", this, &AWebSlingerCharacter::LookUp);
-	PlayerInputComponent->BindAxis("TurnRate", this, &AWebSlingerCharacter::TurnAtRate);
-	PlayerInputComponent->BindAxis("LookUpRate", this, &AWebSlingerCharacter::LookUpAtRate);
-	PlayerInputComponent->BindAxis("Reel", this, &AWebSlingerCharacter::Reel);
+	BuildInputAssets();
+	ApplyMappingContext();
 
-	PlayerInputComponent->BindAction("FireWeb", IE_Pressed, this, &AWebSlingerCharacter::OnFireWebPressed);
-	PlayerInputComponent->BindAction("FireWeb", IE_Released, this, &AWebSlingerCharacter::OnFireWebReleased);
-	PlayerInputComponent->BindAction("ZipTo", IE_Pressed, this, &AWebSlingerCharacter::OnZipPressed);
-	PlayerInputComponent->BindAction("WallCrawl", IE_Pressed, this, &AWebSlingerCharacter::OnWallCrawlPressed);
-	PlayerInputComponent->BindAction("WallCrawl", IE_Released, this, &AWebSlingerCharacter::OnWallCrawlReleased);
-	PlayerInputComponent->BindAction("Jump", IE_Pressed, this, &ACharacter::Jump);
-	PlayerInputComponent->BindAction("Jump", IE_Released, this, &ACharacter::StopJumping);
+	UEnhancedInputComponent* Input = Cast<UEnhancedInputComponent>(PlayerInputComponent);
+	if (!Input)
+	{
+		// Project settings have been switched back to the legacy input component.
+		UE_LOG(LogTemp, Error, TEXT("WebSlinger needs the Enhanced Input component. "
+			"Check DefaultInputComponentClass in Project Settings > Input."));
+		return;
+	}
+
+	Input->BindAction(ActMoveForward, ETriggerEvent::Triggered, this, &AWebSlingerCharacter::OnMoveForward);
+	Input->BindAction(ActMoveRight, ETriggerEvent::Triggered, this, &AWebSlingerCharacter::OnMoveRight);
+	Input->BindAction(ActTurn, ETriggerEvent::Triggered, this, &AWebSlingerCharacter::OnTurn);
+	Input->BindAction(ActLookUp, ETriggerEvent::Triggered, this, &AWebSlingerCharacter::OnLookUp);
+	Input->BindAction(ActTurnRate, ETriggerEvent::Triggered, this, &AWebSlingerCharacter::OnTurnRate);
+	Input->BindAction(ActLookUpRate, ETriggerEvent::Triggered, this, &AWebSlingerCharacter::OnLookUpRate);
+
+	// Reel holds a value on the movement component, so it needs an explicit
+	// reset when the key comes up - unlike movement input, which is consumed
+	// and cleared every frame.
+	Input->BindAction(ActReel, ETriggerEvent::Triggered, this, &AWebSlingerCharacter::OnReel);
+	Input->BindAction(ActReel, ETriggerEvent::Completed, this, &AWebSlingerCharacter::OnReelReleased);
+	Input->BindAction(ActReel, ETriggerEvent::Canceled, this, &AWebSlingerCharacter::OnReelReleased);
+
+	Input->BindAction(ActFireWeb, ETriggerEvent::Started, this, &AWebSlingerCharacter::OnFireWebPressed);
+	Input->BindAction(ActFireWeb, ETriggerEvent::Completed, this, &AWebSlingerCharacter::OnFireWebReleased);
+	Input->BindAction(ActZip, ETriggerEvent::Started, this, &AWebSlingerCharacter::OnZipPressed);
+	Input->BindAction(ActJump, ETriggerEvent::Started, this, &AWebSlingerCharacter::OnJumpPressed);
+	Input->BindAction(ActJump, ETriggerEvent::Completed, this, &AWebSlingerCharacter::OnJumpReleased);
+	Input->BindAction(ActWallCrawl, ETriggerEvent::Started, this, &AWebSlingerCharacter::OnWallCrawlPressed);
+	Input->BindAction(ActWallCrawl, ETriggerEvent::Completed, this, &AWebSlingerCharacter::OnWallCrawlReleased);
 }
 
-void AWebSlingerCharacter::MoveForward(float Value)
+// ---------------------------------------------------------------------------
+// Input handlers
+// ---------------------------------------------------------------------------
+
+void AWebSlingerCharacter::OnMoveForward(const FInputActionValue& Value)
 {
-	if (FMath::IsNearlyZero(Value) || !Controller)
+	const float Scale = Value.Get<float>();
+	if (FMath::IsNearlyZero(Scale) || !Controller)
 	{
 		return;
 	}
@@ -101,17 +224,18 @@ void AWebSlingerCharacter::MoveForward(float Value)
 	{
 		// Airborne and on walls, steering is where the camera points, including
 		// pitch. On the ground it stays flat so looking down does not slow you.
-		AddMovementInput(Camera->GetForwardVector(), Value);
+		AddMovementInput(Camera->GetForwardVector(), Scale);
 		return;
 	}
 
 	const FRotator YawOnly(0.f, Controller->GetControlRotation().Yaw, 0.f);
-	AddMovementInput(FRotationMatrix(YawOnly).GetUnitAxis(EAxis::X), Value);
+	AddMovementInput(FRotationMatrix(YawOnly).GetUnitAxis(EAxis::X), Scale);
 }
 
-void AWebSlingerCharacter::MoveRight(float Value)
+void AWebSlingerCharacter::OnMoveRight(const FInputActionValue& Value)
 {
-	if (FMath::IsNearlyZero(Value) || !Controller)
+	const float Scale = Value.Get<float>();
+	if (FMath::IsNearlyZero(Scale) || !Controller)
 	{
 		return;
 	}
@@ -119,32 +243,47 @@ void AWebSlingerCharacter::MoveRight(float Value)
 	const UWebSlingerMovementComponent* Move = GetSlingerMovement();
 	if (Move && Move->IsWallCrawling())
 	{
-		AddMovementInput(Camera->GetRightVector(), Value);
+		AddMovementInput(Camera->GetRightVector(), Scale);
 		return;
 	}
 
 	const FRotator YawOnly(0.f, Controller->GetControlRotation().Yaw, 0.f);
-	AddMovementInput(FRotationMatrix(YawOnly).GetUnitAxis(EAxis::Y), Value);
+	AddMovementInput(FRotationMatrix(YawOnly).GetUnitAxis(EAxis::Y), Scale);
 }
 
-void AWebSlingerCharacter::Turn(float Value)      { AddControllerYawInput(Value); }
-void AWebSlingerCharacter::LookUp(float Value)    { AddControllerPitchInput(Value); }
-
-void AWebSlingerCharacter::TurnAtRate(float Value)
+void AWebSlingerCharacter::OnTurn(const FInputActionValue& Value)
 {
-	AddControllerYawInput(Value * TurnRateDegrees * GetWorld()->GetDeltaSeconds());
+	AddControllerYawInput(Value.Get<float>() * MouseSensitivity);
 }
 
-void AWebSlingerCharacter::LookUpAtRate(float Value)
+void AWebSlingerCharacter::OnLookUp(const FInputActionValue& Value)
 {
-	AddControllerPitchInput(-Value * LookRateDegrees * GetWorld()->GetDeltaSeconds());
+	AddControllerPitchInput(Value.Get<float>() * MouseSensitivity);
 }
 
-void AWebSlingerCharacter::Reel(float Value)
+void AWebSlingerCharacter::OnTurnRate(const FInputActionValue& Value)
+{
+	AddControllerYawInput(Value.Get<float>() * TurnRateDegrees * GetWorld()->GetDeltaSeconds());
+}
+
+void AWebSlingerCharacter::OnLookUpRate(const FInputActionValue& Value)
+{
+	AddControllerPitchInput(-Value.Get<float>() * LookRateDegrees * GetWorld()->GetDeltaSeconds());
+}
+
+void AWebSlingerCharacter::OnReel(const FInputActionValue& Value)
 {
 	if (UWebSlingerMovementComponent* Move = GetSlingerMovement())
 	{
-		Move->SetReelInput(Value);
+		Move->SetReelInput(Value.Get<float>());
+	}
+}
+
+void AWebSlingerCharacter::OnReelReleased()
+{
+	if (UWebSlingerMovementComponent* Move = GetSlingerMovement())
+	{
+		Move->SetReelInput(0.f);
 	}
 }
 
@@ -171,6 +310,9 @@ void AWebSlingerCharacter::OnZipPressed()
 		WebShooter->ZipToTarget();
 	}
 }
+
+void AWebSlingerCharacter::OnJumpPressed()  { Jump(); }
+void AWebSlingerCharacter::OnJumpReleased() { StopJumping(); }
 
 void AWebSlingerCharacter::OnWallCrawlPressed()
 {

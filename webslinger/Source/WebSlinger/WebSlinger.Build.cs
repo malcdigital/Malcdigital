@@ -12,6 +12,7 @@ public class WebSlinger : ModuleRules
 			"CoreUObject",
 			"Engine",
 			"InputCore",
+			"EnhancedInput",
 			"CableComponent",
 		});
 	}

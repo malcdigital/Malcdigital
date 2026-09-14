@@ -20,19 +20,27 @@ there is somewhere to swing the moment you press Play.
 
 ## Quick start
 
-You need Unreal Engine 5.5 and a C++ toolchain (Visual Studio 2022 with the
-"Game development with C++" workload on Windows, Xcode on macOS).
+You need Unreal Engine 5.6 and a C++ toolchain: Xcode on macOS, or Visual
+Studio 2022 with the "Game development with C++" workload on Windows.
+
+**macOS**
 
 ```
-1. Right-click WebSlinger.uproject -> Generate Visual Studio project files
-2. Build the WebSlingerEditor target, or just open WebSlinger.uproject
-   and let it compile
-3. File -> New Level -> Empty Level
-4. Drag a CityBlockGenerator from the Place Actors panel into the level
+1. Open WebSlinger.uproject. It reports the module is missing
+   and offers to rebuild - say yes. First build takes a few minutes.
+2. File -> New Level -> Empty Level
+3. Drag a CityBlockGenerator from the Place Actors panel into the level
    (search "City Block")
-5. Drag in a Player Start and set its Z to about 4000
-6. Press Play
+4. Drag in a Player Start and set its Z to about 4000
+5. Press Play
 ```
+
+If the rebuild prompt does not appear, generate an Xcode project first:
+right-click `WebSlinger.uproject` -> Services -> Generate Xcode Project, then
+build the `WebSlingerEditor` scheme.
+
+**Windows** is the same, except step 1 is right-click `WebSlinger.uproject` ->
+Generate Visual Studio project files, then build the `WebSlingerEditor` target.
 
 The game mode is already wired in `Config/DefaultEngine.ini`, so any empty level
 spawns the slinger pawn and its HUD with no Blueprint needed.
@@ -153,20 +161,14 @@ Source/WebSlinger/
 - **No mesh, no animation, no sound.** In first person you never see the body,
   which is what makes the prototype honest — but it also means half of what
   sells a swing in a shipped game is simply absent here.
-- **Legacy input.** Enhanced Input needs binary `.uasset` action and mapping
-  context files, which cannot live in a text-only repo, so
-  `DefaultEngine.ini` forces the legacy input classes and the bindings live in
-  `DefaultInput.ini`.
-
-### Migrating to Enhanced Input
-
-Once you have a `Content/` folder, delete the `DefaultPlayerInputClass` and
-`DefaultInputComponentClass` lines from `Config/DefaultEngine.ini`, create an
-`InputMappingContext` and one `InputAction` per row of the controls table, add
-the context in `BeginPlay` via `UEnhancedInputLocalPlayerSubsystem`, and swap
-the `BindAxis`/`BindAction` calls in
-`AWebSlingerCharacter::SetupPlayerInputComponent` for `BindAction` on a
-`UEnhancedInputComponent`. The handler functions themselves do not change.
+- **Input bindings are code, not assets.** Enhanced Input normally wants an
+  `InputMappingContext` and one `InputAction` per binding as `.uasset` files,
+  which are binary and cannot live in a text-only repo. They are constructed at
+  runtime in `AWebSlingerCharacter::BuildInputAssets` instead - same behaviour,
+  but you rebind keys by editing C++ rather than by opening an asset. If you
+  later want them as real assets, author them in the editor and swap the
+  `Act*` pointers for `UPROPERTY(EditDefaultsOnly)` references; the handlers do
+  not change.
 
 ### Adding a body
 
