@@ -138,7 +138,11 @@ bool UWebSlingerMovementComponent::CanAttemptJump() const
 	return Super::CanAttemptJump() || IsWallCrawling();
 }
 
+#if UE_VERSION_OLDER_THAN(5, 4, 0)
+bool UWebSlingerMovementComponent::DoJump(bool bReplayingMoves)
+#else
 bool UWebSlingerMovementComponent::DoJump(bool bReplayingMoves, float DeltaTime)
+#endif
 {
 	if (IsWallCrawling() && CharacterOwner && CharacterOwner->CanJump())
 	{
@@ -157,7 +161,11 @@ bool UWebSlingerMovementComponent::DoJump(bool bReplayingMoves, float DeltaTime)
 		return true;
 	}
 
+#if UE_VERSION_OLDER_THAN(5, 4, 0)
+	return Super::DoJump(bReplayingMoves);
+#else
 	return Super::DoJump(bReplayingMoves, DeltaTime);
+#endif
 }
 
 void UWebSlingerMovementComponent::OnMovementModeChanged(EMovementMode PreviousMovementMode, uint8 PreviousCustomMode)

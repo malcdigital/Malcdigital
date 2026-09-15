@@ -2,6 +2,7 @@
 
 #include "CoreMinimal.h"
 #include "GameFramework/CharacterMovementComponent.h"
+#include "Misc/EngineVersionComparison.h"
 #include "WebSlingerMovementComponent.generated.h"
 
 /** Custom movement modes. Index 0 is reserved: CustomMovementMode defaults to it. */
@@ -93,7 +94,11 @@ public:
 	// --------------------------------------------------- UCharacterMovement
 	virtual float GetMaxSpeed() const override;
 	virtual bool CanAttemptJump() const override;
+#if UE_VERSION_OLDER_THAN(5, 4, 0)
+	virtual bool DoJump(bool bReplayingMoves) override;
+#else
 	virtual bool DoJump(bool bReplayingMoves, float DeltaTime) override;
+#endif
 
 protected:
 	virtual void PhysCustom(float DeltaTime, int32 Iterations) override;
