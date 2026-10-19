@@ -30,10 +30,16 @@ Studio 2022 with the "Game development with C++" workload on Windows.
    and offers to rebuild - say yes. First build takes a few minutes.
 2. File -> New Level -> Empty Level
 3. Drag a CityBlockGenerator from the Place Actors panel into the level
-   (search "City Block")
+   (search "City Block"). It brings its own sun, sky and fog, so the
+   level lights itself.
 4. Drag in a Player Start and set its Z to about 4000
 5. Press Play
 ```
+
+An Empty Level in Unreal has no lighting whatsoever and renders black, which
+is why the generator carries a sun, a real-time sky light, a Sky Atmosphere and
+height fog of its own. Dropping it into a level that is already lit means two
+suns fighting - untick **bGenerateLighting** on the actor in that case.
 
 If the rebuild prompt does not appear, generate an Xcode project first:
 right-click `WebSlinger.uproject` -> Services -> Generate Xcode Project, then
@@ -139,7 +145,8 @@ Source/WebSlinger/
   WebShooterComponent           anchor search, aim assist, cable visual, zip
   WebSlingerCharacter           camera feel, input, crawl surface search
   WebSlingerHUD                 canvas reticle and speed bar, no UMG assets
-  CityBlockGenerator            seeded greybox city from engine cubes
+  CityBlockGenerator            seeded greybox city from engine cubes, plus
+                                the sun/sky/fog an Empty Level lacks
   WebSlingerGameMode            wires the pawn and HUD to any empty level
 ```
 
@@ -157,7 +164,8 @@ Source/WebSlinger/
   bolted together: two hard distance constraints on one body need an iterative
   solver, or they fight and buzz.
 - **The city is a greybox.** Boxes on a grid, no interiors, no detail, no
-  ledges to catch. It is a physics test space, not a level.
+  ledges to catch, and one untextured material on everything. It is a physics
+  test space, not a level.
 - **No mesh, no animation, no sound.** In first person you never see the body,
   which is what makes the prototype honest — but it also means half of what
   sells a swing in a shipped game is simply absent here.

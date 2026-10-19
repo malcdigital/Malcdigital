@@ -1,6 +1,10 @@
 #include "CityBlockGenerator.h"
 
+#include "Components/DirectionalLightComponent.h"
+#include "Components/ExponentialHeightFogComponent.h"
 #include "Components/InstancedStaticMeshComponent.h"
+#include "Components/SkyAtmosphereComponent.h"
+#include "Components/SkyLightComponent.h"
 #include "Engine/StaticMesh.h"
 #include "UObject/ConstructorHelpers.h"
 
@@ -32,6 +36,29 @@ ACityBlockGenerator::ACityBlockGenerator()
 	Ground->SetCollisionResponseToAllChannels(ECR_Block);
 	Ground->SetMobility(EComponentMobility::Static);
 
+	// Movable, because the sky light captures in real time and a Static light
+	// would need a bake the moment anything here changes.
+	SunLight = CreateDefaultSubobject<UDirectionalLightComponent>(TEXT("SunLight"));
+	SunLight->SetupAttachment(Root);
+	SunLight->SetMobility(EComponentMobility::Movable);
+	// Tells Sky Atmosphere which light is the sun, so the sky colour and the
+	// shadow direction agree with each other.
+	SunLight->bAtmosphereSunLight = true;
+	SunLight->DynamicShadowDistanceMovableLight = 30000.f;
+
+	SkyLight = CreateDefaultSubobject<USkyLightComponent>(TEXT("SkyLight"));
+	SkyLight->SetupAttachment(Root);
+	SkyLight->SetMobility(EComponentMobility::Movable);
+	// Without this the sky light has nothing captured and the shadowed faces of
+	// every tower go pure black.
+	SkyLight->bRealTimeCapture = true;
+
+	SkyAtmosphere = CreateDefaultSubobject<USkyAtmosphereComponent>(TEXT("SkyAtmosphere"));
+	SkyAtmosphere->SetupAttachment(Root);
+
+	HeightFog = CreateDefaultSubobject<UExponentialHeightFogComponent>(TEXT("HeightFog"));
+	HeightFog->SetupAttachment(Root);
+
 	static ConstructorHelpers::FObjectFinder<UStaticMesh> CubeMesh(TEXT("/Engine/BasicShapes/Cube.Cube"));
 	if (CubeMesh.Succeeded())
 	{
@@ -52,6 +79,8 @@ void ACityBlockGenerator::Generate()
 	{
 		return;
 	}
+
+	BuildLighting();
 
 	Buildings->ClearInstances();
 	Ground->ClearInstances();
@@ -108,4 +137,26 @@ void ACityBlockGenerator::Generate()
 				FVector(FootprintX / EngineCubeSize, FootprintY / EngineCubeSize, Height / EngineCubeSize)));
 		}
 	}
+}
+
+void ACityBlockGenerator::BuildLighting()
+{
+	if (!SunLight || !SkyLight || !SkyAtmosphere || !HeightFog)
+	{
+		return;
+	}
+
+	// Dropped into an already-lit level, a second sun and sky fight the first.
+	SunLight->SetVisibility(bGenerateLighting);
+	SkyLight->SetVisibility(bGenerateLighting);
+	SkyAtmosphere->SetVisibility(bGenerateLighting);
+	HeightFog->SetVisibility(bGenerateLighting);
+
+	if (!bGenerateLighting)
+	{
+		return;
+	}
+
+	SunLight->SetRelativeRotation(FRotator(SunPitch, SunYaw, 0.f));
+	HeightFog->SetFogDensity(FogDensity);
 }

@@ -4,7 +4,11 @@
 #include "GameFramework/Actor.h"
 #include "CityBlockGenerator.generated.h"
 
+class UDirectionalLightComponent;
+class UExponentialHeightFogComponent;
 class UInstancedStaticMeshComponent;
+class USkyAtmosphereComponent;
+class USkyLightComponent;
 class UStaticMesh;
 
 /**
@@ -17,6 +21,11 @@ class UStaticMesh;
  *
  * Deliberately varied in height. A uniform skyline lets any tuning pass, and
  * hides exactly the case that breaks a swing - the anchor that is too low.
+ *
+ * It carries its own sun, sky and fog, because an Empty Level in Unreal has no
+ * lighting at all and renders black - so "drop in one actor and press Play"
+ * would otherwise show you nothing. Turn bGenerateLighting off if you drop this
+ * into a level that is already lit.
  */
 UCLASS()
 class WEBSLINGER_API ACityBlockGenerator : public AActor
@@ -42,6 +51,16 @@ public:
 	UPROPERTY(EditAnywhere, Category = "City") int32 Seed = 20250910;
 	UPROPERTY(EditAnywhere, Category = "City") bool bGenerateGround = true;
 
+	/** Off when the level already has a sun and sky of its own. */
+	UPROPERTY(EditAnywhere, Category = "Lighting") bool bGenerateLighting = true;
+	/** Sun angle. A low sun throws long shadows between towers and reads the
+	 *  depth of the streets better than an overhead one. */
+	UPROPERTY(EditAnywhere, Category = "Lighting") float SunPitch = -34.f;
+	UPROPERTY(EditAnywhere, Category = "Lighting") float SunYaw = 145.f;
+	/** Haze. Mostly here for depth cueing - it is what makes far towers read as
+	 *  far rather than small. */
+	UPROPERTY(EditAnywhere, Category = "Lighting") float FogDensity = 0.008f;
+
 	virtual void OnConstruction(const FTransform& Transform) override;
 
 	/** Rebuild from the current settings. Called on construction and on load. */
@@ -51,4 +70,11 @@ public:
 private:
 	UPROPERTY(VisibleAnywhere, Category = "City") TObjectPtr<UInstancedStaticMeshComponent> Buildings;
 	UPROPERTY(VisibleAnywhere, Category = "City") TObjectPtr<UInstancedStaticMeshComponent> Ground;
+
+	UPROPERTY(VisibleAnywhere, Category = "Lighting") TObjectPtr<UDirectionalLightComponent> SunLight;
+	UPROPERTY(VisibleAnywhere, Category = "Lighting") TObjectPtr<USkyLightComponent> SkyLight;
+	UPROPERTY(VisibleAnywhere, Category = "Lighting") TObjectPtr<USkyAtmosphereComponent> SkyAtmosphere;
+	UPROPERTY(VisibleAnywhere, Category = "Lighting") TObjectPtr<UExponentialHeightFogComponent> HeightFog;
+
+	void BuildLighting();
 };
