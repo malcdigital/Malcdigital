@@ -13,8 +13,10 @@ var _chase_init := false
 
 
 func _ready() -> void:
-	near = 0.05
-	far = 3000.0
+	# A larger near plane keeps depth precision usable on 16-bit depth
+	# buffers (some phones / WebGL); nothing is closer than the car nose anyway.
+	near = 0.15
+	far = 2500.0
 
 
 func toggle() -> void:

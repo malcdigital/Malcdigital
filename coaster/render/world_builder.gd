@@ -29,7 +29,9 @@ static func build(parent: Node3D) -> void:
 	var sun := DirectionalLight3D.new()
 	sun.rotation_degrees = Vector3(-50, -35, 0)
 	sun.light_energy = 1.05
-	sun.shadow_enabled = true
+	# Shadow maps are the most expensive part of the frame on phones and in
+	# WebGL, so only desktop builds get them.
+	sun.shadow_enabled = not (OS.has_feature("web") or OS.has_feature("mobile"))
 	sun.directional_shadow_max_distance = 160.0
 	sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_2_SPLITS
 	parent.add_child(sun)

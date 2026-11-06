@@ -25,7 +25,7 @@ func _frames(n: int) -> void:
 func _wait_analysis(main: Node) -> void:
 	for i in 600:
 		await process_frame
-		if main._job_id < 0 and not main._dirty:
+		if not main._job_busy():
 			return
 
 

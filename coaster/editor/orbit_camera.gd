@@ -22,8 +22,8 @@ var _focus_tween: Tween
 
 func _ready() -> void:
 	fov = 60.0
-	far = 3000.0
-	near = 0.1
+	far = 2500.0
+	near = 0.3
 	_apply()
 
 

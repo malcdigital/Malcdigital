@@ -375,7 +375,7 @@ func show_editor() -> void:
 
 
 func set_busy(busy: bool) -> void:
-	busy_label.text = "analysing..." if busy else ""
+	busy_label.text = "analysing..." if busy else "%d fps" % Engine.get_frames_per_second()
 
 
 func refresh_history(can_undo: bool, can_redo: bool) -> void:
@@ -513,7 +513,7 @@ func update_ride(sim: TrainSim, sick: int, riders: int) -> void:
 		TrackPoint.Segment.BRAKE: what = " · braking"
 	if sim.v < -0.1:
 		what = " · ROLLING BACK"
-	ride_info.text = "%.0f s · %d%% done%s%s" % [sim.time, clampi(int((sim.s - sim.start_s) / sim.spline.length * 100.0), 0, 100), what,
+	ride_info.text = "%.0f s · %d%% done · %d fps%s%s" % [sim.time, clampi(int((sim.s - sim.start_s) / sim.spline.length * 100.0), 0, 100), Engine.get_frames_per_second(), what,
 		(" · %d/%d riders sick" % [sick, riders]) if sick > 0 else ""]
 
 

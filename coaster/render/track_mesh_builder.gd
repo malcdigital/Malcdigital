@@ -26,21 +26,28 @@ const LODS := [
 ]
 
 
-## Returns an Array (per chunk) of Arrays (per LOD) of surface dictionaries:
-##   {"steel": surface_arrays, "spine": surface_arrays, "aabb": AABB}
+static func chunk_count(spline: TrackSpline) -> int:
+	if spline == null or spline.count == 0:
+		return 0
+	return ceili(float(spline.count) / CHUNK_SAMPLES)
+
+
+## One chunk at every LOD: an Array (per LOD) of surface dictionaries
+## {"steel": surface_arrays, "spine": surface_arrays}.
+static func build_chunk(spline: TrackSpline, spine_colors: PackedColorArray, index: int) -> Array:
+	var start := index * CHUNK_SAMPLES
+	var end := mini(start + CHUNK_SAMPLES, spline.count)   # inclusive end sample (wraps at count)
+	var lods := []
+	for lod in LODS:
+		lods.append(_build_chunk(spline, spine_colors, start, end, lod))
+	return lods
+
+
+## All chunks at once.
 static func build_arrays(spline: TrackSpline, spine_colors: PackedColorArray) -> Array:
 	var chunks := []
-	if spline == null or spline.count == 0:
-		return chunks
-	var n := spline.count
-	var start := 0
-	while start < n:
-		var end := mini(start + CHUNK_SAMPLES, n)   # inclusive end sample (wraps at n)
-		var lods := []
-		for lod in LODS:
-			lods.append(_build_chunk(spline, spine_colors, start, end, lod))
-		chunks.append(lods)
-		start = end
+	for i in chunk_count(spline):
+		chunks.append(build_chunk(spline, spine_colors, i))
 	return chunks
 
 
@@ -87,7 +94,7 @@ static func _build_chunk(sp: TrackSpline, colors: PackedColorArray, k0: int, k1:
 		var c := p - u * (HEART_TO_RAIL + 0.09)
 		steel.box(c, r * (GAUGE_HALF + 0.02), u * 0.05, t * 0.07)
 		steel.box(c - u * (SPINE_DROP * 0.5), r * 0.05, u * (SPINE_DROP * 0.5), t * 0.06)
-	return {"steel": steel.arrays(), "spine": spine.arrays(), "aabb": steel.aabb.merge(spine.aabb)}
+	return {"steel": steel.arrays(), "spine": spine.arrays()}
 
 
 static func to_mesh(surfaces: Dictionary, steel_mat: Material, spine_mat: Material) -> ArrayMesh:
@@ -107,18 +114,11 @@ class _Surface:
 	var normals := PackedVector3Array()
 	var colors := PackedColorArray()
 	var indices := PackedInt32Array()
-	var aabb := AABB()
-	var _first := true
 
 	func _add(v: Vector3, nrm: Vector3, c: Color) -> void:
 		verts.append(v)
 		normals.append(nrm)
 		colors.append(c)
-		if _first:
-			aabb = AABB(v, Vector3.ZERO)
-			_first = false
-		else:
-			aabb = aabb.expand(v)
 
 	## Ring of `sides` vertices around `center` in the plane spanned by r and u.
 	## Returns the index of its first vertex.
@@ -133,22 +133,35 @@ class _Surface:
 	func connect_rings(a: int, b: int, sides: int) -> void:
 		for i in sides:
 			var j := (i + 1) % sides
-			indices.append_array([a + i, b + i, b + j, a + i, b + j, a + j])
+			indices.append(a + i)
+			indices.append(b + i)
+			indices.append(b + j)
+			indices.append(a + i)
+			indices.append(b + j)
+			indices.append(a + j)
 
 	## Box centred at c with half-extent axis vectors x, y, z.
 	func box(c: Vector3, x: Vector3, y: Vector3, z: Vector3) -> void:
-		var faces := [[x, y, z], [-x, y, -z], [y, z, x], [-y, z, -x], [z, x, y], [-z, x, -y]]
-		for f in faces:
-			var nrm: Vector3 = f[0]
-			var a: Vector3 = f[1]
-			var b: Vector3 = f[2]
-			var base := verts.size()
-			var nn := nrm.normalized()
-			_add(c + nrm - a - b, nn, Color.WHITE)
-			_add(c + nrm + a - b, nn, Color.WHITE)
-			_add(c + nrm + a + b, nn, Color.WHITE)
-			_add(c + nrm - a + b, nn, Color.WHITE)
-			indices.append_array([base, base + 2, base + 1, base, base + 3, base + 2])
+		_face(c, x, y, z)
+		_face(c, -x, y, -z)
+		_face(c, y, z, x)
+		_face(c, -y, z, -x)
+		_face(c, z, x, y)
+		_face(c, -z, x, -y)
+
+	func _face(c: Vector3, nrm: Vector3, a: Vector3, b: Vector3) -> void:
+		var base := verts.size()
+		var nn := nrm.normalized()
+		_add(c + nrm - a - b, nn, Color.WHITE)
+		_add(c + nrm + a - b, nn, Color.WHITE)
+		_add(c + nrm + a + b, nn, Color.WHITE)
+		_add(c + nrm - a + b, nn, Color.WHITE)
+		indices.append(base)
+		indices.append(base + 2)
+		indices.append(base + 1)
+		indices.append(base)
+		indices.append(base + 3)
+		indices.append(base + 2)
 
 	func arrays() -> Array:
 		var arr := []

@@ -78,7 +78,7 @@ func bake(data: TrackData, spacing: float = DEFAULT_SPACING) -> bool:
 		var p2 := data.points[(i + 1) % n].position
 		var p3 := data.points[(i + 2) % n].position
 		var knots := _centripetal_knots(p0, p1, p2, p3)
-		var steps := clampi(ceili(p1.distance_to(p2) / 0.1), 16, 4000)
+		var steps := clampi(ceili(p1.distance_to(p2) / 0.2), 12, 2000)
 		point_s[i] = acc
 		for k in steps:
 			var t := float(k) / float(steps)

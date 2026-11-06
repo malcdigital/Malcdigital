@@ -123,8 +123,12 @@ func refresh_handles() -> void:
 		st.material_override = h.material_override
 
 
+var _last_cam := Transform3D()
+
 func _process(_dt: float) -> void:
-	if visible and data != null and camera != null:
+	# Handle sizes depend on camera distance: only redo them when it moved.
+	if visible and data != null and camera != null and camera.global_transform != _last_cam:
+		_last_cam = camera.global_transform
 		refresh_handles()
 
 

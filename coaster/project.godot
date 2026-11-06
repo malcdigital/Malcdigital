@@ -19,6 +19,9 @@ window/size/viewport_height=720
 window/stretch/mode="canvas_items"
 window/stretch/aspect="expand"
 window/handheld/orientation=4
+; Phones have 2-3x pixel density; rendering the web build at that density costs
+; up to 9x the pixels. Render at CSS resolution on the web instead.
+window/dpi/allow_hidpi.web=false
 
 [input_devices]
 
@@ -29,3 +32,5 @@ pointing/emulate_mouse_from_touch=true
 renderer/rendering_method="mobile"
 textures/vram_compression/import_etc2_astc=true
 anti_aliasing/quality/msaa_3d=1
+anti_aliasing/quality/msaa_3d.web=0
+anti_aliasing/quality/msaa_3d.mobile=0

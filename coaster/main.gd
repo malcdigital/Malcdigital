@@ -27,7 +27,6 @@ var hud: Hud
 
 var _dirty := false
 var _job_id := -1
-var _job_result := {}
 var _sim: TrainSim
 var _acc := 0.0
 var _ride_speed_i := 0
@@ -71,46 +70,58 @@ func _exit_tree() -> void:
 
 # -----------------------------------------------------------------------------
 # Analysis (background)
+#
+# With threads (desktop, mobile) the whole AnalysisJob runs on a worker. The
+# web build has none, so the job runs a few milliseconds per frame instead:
+# the game keeps drawing smoothly and the results arrive a few frames later.
 # -----------------------------------------------------------------------------
+
+## Per-frame analysis budget when there are no threads (microseconds).
+const SLICE_BUDGET_USEC := 5000
+
+var _threaded := not OS.has_feature("web") and OS.get_environment("COASTER_NO_THREADS") == ""
+var _job: AnalysisJob
+
 
 func request_analysis() -> void:
 	_dirty = true
 
 
 func _process(dt: float) -> void:
-	if _job_id >= 0 and WorkerThreadPool.is_task_completed(_job_id):
-		WorkerThreadPool.wait_for_task_completion(_job_id)
-		_job_id = -1
-		_apply_job()
-	if _dirty and _job_id < 0:
+	if _job != null:
+		if _threaded:
+			if WorkerThreadPool.is_task_completed(_job_id):
+				WorkerThreadPool.wait_for_task_completion(_job_id)
+				_job_id = -1
+				_apply_job()
+		elif _job.run(SLICE_BUDGET_USEC):
+			_apply_job()
+	if _dirty and _job == null:
 		_start_job()
-	hud.set_busy(_job_id >= 0 or _dirty)
+	hud.set_busy(_job != null or _dirty)
 	if mode == Mode.RIDE:
 		_ride_process(dt)
 
 
 func _start_job() -> void:
 	_dirty = false
-	var copy := data.copy()
-	_job_id = WorkerThreadPool.add_task(_run_job.bind(copy, overlay_mode), false, "Analyse coaster")
+	_job = AnalysisJob.new(data.copy(), overlay_mode, true)
+	if _threaded:
+		_job_id = WorkerThreadPool.add_task(_job.run.bind(1 << 62), false, "Analyse coaster")
 
 
-## Runs on a worker thread. Only touches its own copy of the data and pure
-## RefCounted logic; the result is read by the main thread after completion.
-func _run_job(copy: TrackData, ov: int) -> void:
-	var a := TrackAnalyzer.analyze(copy)
-	var chunks := []
-	if a.valid:
-		chunks = TrackMeshBuilder.build_arrays(a.spline, TrackOverlay.colors(ov, a.spline, a.record))
-	_job_result = {"analysis": a, "chunks": chunks, "data": copy}
+func _job_busy() -> bool:
+	return _job != null or _dirty
 
 
 func _apply_job() -> void:
-	var a: TrackAnalyzer = _job_result["analysis"]
+	var job := _job
+	_job = null
+	var a := job.result
 	analysis = a
-	analysis_data = _job_result["data"]
+	analysis_data = job.data
 	if a.valid:
-		track_view.show_track(a.spline, _job_result["chunks"])
+		track_view.show_track(a.spline, job.chunks)
 		editor.show_problems(a.ratings.problems, a.spline)
 		if mode != Mode.RIDE:
 			_park_train()
@@ -365,7 +376,7 @@ func start_ride() -> void:
 	if analysis == null or not analysis.valid:
 		hud.toast("The track needs at least 4 points")
 		return
-	if _dirty or _job_id >= 0:
+	if _job_busy():
 		hud.toast("Riding the last analysed version of the track")
 	mode = Mode.RIDE
 	editor.visible = false
