@@ -31,6 +31,16 @@ const MIN_HEIGHT := 1.0
 ## `speed` is the expected train speed at the entry (m/s); some elements use
 ## it to pick a sensible size, which is the "snap to a good element" assist.
 static func build(kind: int, entry: Vector3, forward: Vector3, speed: float) -> Array[TrackPoint]:
+	var pts := _build(kind, entry, forward, speed)
+	# Interior points of dense, generated shapes are "minor": the editor
+	# shows them as small dots so the element reads as one piece.
+	if pts.size() > 4:
+		for i in range(0, pts.size() - 1):
+			pts[i].minor = true
+	return pts
+
+
+static func _build(kind: int, entry: Vector3, forward: Vector3, speed: float) -> Array[TrackPoint]:
 	forward = Vector3(forward.x, 0.0, forward.z)
 	if forward.length_squared() < 1e-6:
 		forward = Vector3.FORWARD

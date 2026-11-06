@@ -239,11 +239,12 @@ func _capture() -> void:
 func run_to_end() -> RideRecord:
 	while not finished:
 		step()
-	_finish_record()
+	finalize()
 	return record
 
 
-func _finish_record() -> void:
+## Copy the end-of-ride flags into the record. Call once the ride is over.
+func finalize() -> void:
 	if record == null:
 		return
 	record.completed = completed

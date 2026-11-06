@@ -17,6 +17,9 @@ var bank_deg := 0.0
 ## When true the game picks the roll that cancels lateral G (see TrackSpline).
 var auto_bank := true
 var segment: int = Segment.NORMAL
+## Interior point of a generated element. Shown as a small dot in the editor so
+## an element reads as one piece; it can still be dragged.
+var minor := false
 
 
 func _init(p: Vector3 = Vector3.ZERO, seg: int = Segment.NORMAL, bank: float = 0.0, auto: bool = true) -> void:
@@ -27,22 +30,29 @@ func _init(p: Vector3 = Vector3.ZERO, seg: int = Segment.NORMAL, bank: float = 0
 
 
 func copy() -> TrackPoint:
-	return TrackPoint.new(position, segment, bank_deg, auto_bank)
+	var p := TrackPoint.new(position, segment, bank_deg, auto_bank)
+	p.minor = minor
+	return p
 
 
 func to_dict() -> Dictionary:
-	return {
+	var d := {
 		"p": [snappedf(position.x, 0.001), snappedf(position.y, 0.001), snappedf(position.z, 0.001)],
 		"b": snappedf(bank_deg, 0.01),
 		"a": auto_bank,
 		"s": segment,
 	}
+	if minor:
+		d["m"] = true
+	return d
 
 
 static func from_dict(d: Dictionary) -> TrackPoint:
 	var p: Array = d.get("p", [0, 0, 0])
-	return TrackPoint.new(
+	var tp := TrackPoint.new(
 		Vector3(float(p[0]), float(p[1]), float(p[2])),
 		clampi(int(d.get("s", Segment.NORMAL)), 0, Segment.STATION),
 		float(d.get("b", 0.0)),
 		bool(d.get("a", true)))
+	tp.minor = bool(d.get("m", false))
+	return tp

@@ -18,7 +18,7 @@ var launch_speed := 28.0        # launch motors push until this speed
 var launch_accel := 11.0        # ~1.1 g of thrust
 var brake_speed := 4.0          # brakes slow the train down to this speed
 var brake_decel := 6.0
-var station_speed := 1.5        # drive tyres in the station
+var station_speed := 2.5        # drive tyres in the station
 
 # --- Resistance ----------------------------------------------------------------
 ## Rolling friction coefficient: friction force = mu * normal force.

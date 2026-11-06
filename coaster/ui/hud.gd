@@ -1,0 +1,660 @@
+class_name Hud
+extends CanvasLayer
+## All 2D UI, built in code. Calls back into Main for every action.
+## Buttons are large (52 px tall at the 1280x720 base size, which scales up on
+## high-res screens) so everything works with fingers as well as a mouse.
+
+var main: Node   # Main (untyped to avoid a cyclic class reference)
+
+var root: Control
+var theme_res: Theme
+
+# Editor widgets
+var editor_ui: Control
+var stats_label: RichTextLabel
+var point_panel: PanelContainer
+var point_title: Label
+var segment_option: OptionButton
+var auto_bank_check: CheckButton
+var bank_slider: HSlider
+var bank_label: Label
+var height_label: Label
+var height_toggle: Button
+var snap_toggle: Button
+var undo_btn: Button
+var redo_btn: Button
+var overlay_option: OptionButton
+var graph: TrackGraph
+var graph_toggle: Button
+var busy_label: Label
+
+# Ride widgets
+var ride_ui: Control
+var speed_label: Label
+var g_label: RichTextLabel
+var ride_info: Label
+var cam_btn: Button
+var fast_btn: Button
+
+# Results / dialogs
+var results_panel: PanelContainer
+var results_box: VBoxContainer
+var save_panel: PanelContainer
+var save_name: LineEdit
+var load_panel: PanelContainer
+var load_list: ItemList
+var _load_files: Array[String] = []
+var toast_label: Label
+var _toast_time := 0.0
+var _updating := false
+
+
+func setup(p_main: Node) -> void:
+	main = p_main
+	_build_theme()
+	root = Control.new()
+	root.set_anchors_preset(Control.PRESET_FULL_RECT)
+	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root.theme = theme_res
+	add_child(root)
+	_build_editor_ui()
+	_build_ride_ui()
+	_build_results()
+	_build_dialogs()
+	toast_label = Label.new()
+	toast_label.set_anchors_preset(Control.PRESET_CENTER_TOP)
+	toast_label.position = Vector2(-300, 80)
+	toast_label.size = Vector2(600, 40)
+	toast_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	toast_label.add_theme_color_override("font_outline_color", Color.BLACK)
+	toast_label.add_theme_constant_override("outline_size", 6)
+	toast_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root.add_child(toast_label)
+	show_editor()
+
+
+func _process(dt: float) -> void:
+	if _toast_time > 0.0:
+		_toast_time -= dt
+		toast_label.modulate.a = clampf(_toast_time, 0.0, 1.0)
+
+
+func toast(text: String, seconds: float = 2.5) -> void:
+	toast_label.text = text
+	_toast_time = seconds
+
+
+# -----------------------------------------------------------------------------
+# Theme and helpers
+# -----------------------------------------------------------------------------
+
+func _build_theme() -> void:
+	theme_res = Theme.new()
+	theme_res.default_font_size = 18
+	var panel := StyleBoxFlat.new()
+	panel.bg_color = Color(0.07, 0.09, 0.13, 0.82)
+	panel.set_corner_radius_all(10)
+	panel.set_content_margin_all(10)
+	theme_res.set_stylebox("panel", "PanelContainer", panel)
+	var btn := StyleBoxFlat.new()
+	btn.bg_color = Color(0.16, 0.2, 0.28, 0.92)
+	btn.set_corner_radius_all(8)
+	btn.content_margin_left = 14
+	btn.content_margin_right = 14
+	btn.content_margin_top = 8
+	btn.content_margin_bottom = 8
+	var hover := btn.duplicate()
+	hover.bg_color = Color(0.22, 0.28, 0.4, 0.95)
+	var pressed := btn.duplicate()
+	pressed.bg_color = Color(0.95, 0.55, 0.15, 0.95)
+	var disabled := btn.duplicate()
+	disabled.bg_color = Color(0.12, 0.14, 0.18, 0.6)
+	for cls in ["Button", "OptionButton", "MenuButton", "CheckButton"]:
+		theme_res.set_stylebox("normal", cls, btn)
+		theme_res.set_stylebox("hover", cls, hover)
+		theme_res.set_stylebox("pressed", cls, pressed)
+		theme_res.set_stylebox("hover_pressed", cls, pressed)
+		theme_res.set_stylebox("disabled", cls, disabled)
+		theme_res.set_stylebox("focus", cls, StyleBoxEmpty.new())
+
+
+func _button(text: String, cb: Callable, toggle: bool = false) -> Button:
+	var b := Button.new()
+	b.text = text
+	b.custom_minimum_size = Vector2(52, 52)
+	b.toggle_mode = toggle
+	b.focus_mode = Control.FOCUS_NONE
+	if toggle:
+		b.toggled.connect(func(on: bool) -> void: cb.call(on))
+	else:
+		b.pressed.connect(cb)
+	return b
+
+
+func _panel(parent: Control) -> PanelContainer:
+	var p := PanelContainer.new()
+	parent.add_child(p)
+	return p
+
+
+func _bar(parent: Control, preset: int) -> HBoxContainer:
+	var bar := HBoxContainer.new()
+	bar.add_theme_constant_override("separation", 6)
+	parent.add_child(bar)
+	bar.set_anchors_and_offsets_preset(preset, Control.PRESET_MODE_MINSIZE, 8)
+	return bar
+
+
+# -----------------------------------------------------------------------------
+# Editor UI
+# -----------------------------------------------------------------------------
+
+func _build_editor_ui() -> void:
+	editor_ui = Control.new()
+	editor_ui.set_anchors_preset(Control.PRESET_FULL_RECT)
+	editor_ui.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root.add_child(editor_ui)
+
+	# --- Top bar ---------------------------------------------------------------
+	var top := HBoxContainer.new()
+	top.add_theme_constant_override("separation", 6)
+	editor_ui.add_child(top)
+	top.set_anchors_preset(Control.PRESET_TOP_WIDE)
+	top.offset_left = 8
+	top.offset_top = 8
+	top.offset_right = -8
+	undo_btn = _button("Undo", func() -> void: main.undo())
+	redo_btn = _button("Redo", func() -> void: main.redo())
+	top.add_child(undo_btn)
+	top.add_child(redo_btn)
+	var file_menu := MenuButton.new()
+	file_menu.text = "File"
+	file_menu.custom_minimum_size = Vector2(52, 52)
+	file_menu.flat = false
+	var fp := file_menu.get_popup()
+	fp.add_theme_font_size_override("font_size", 22)
+	fp.add_item("Save…", 0)
+	fp.add_item("Load…", 1)
+	fp.add_separator()
+	fp.add_item("New: starter coaster", 2)
+	fp.add_item("New: blank oval", 3)
+	fp.id_pressed.connect(_on_file_menu)
+	top.add_child(file_menu)
+	overlay_option = OptionButton.new()
+	overlay_option.custom_minimum_size = Vector2(52, 52)
+	overlay_option.focus_mode = Control.FOCUS_NONE
+	for i in TrackOverlay.NAMES.size():
+		overlay_option.add_item(TrackOverlay.NAMES[i], i)
+	overlay_option.get_popup().add_theme_font_size_override("font_size", 22)
+	overlay_option.item_selected.connect(func(i: int) -> void: main.set_overlay(i))
+	top.add_child(overlay_option)
+	graph_toggle = _button("Graph", func(on: bool) -> void: graph.visible = on, true)
+	graph_toggle.set_pressed_no_signal(true)
+	top.add_child(graph_toggle)
+	var spacer := Control.new()
+	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	spacer.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	top.add_child(spacer)
+	busy_label = Label.new()
+	busy_label.text = "…"
+	busy_label.modulate = Color(1, 1, 1, 0.6)
+	top.add_child(busy_label)
+	var ride := _button("▶  Test ride", func() -> void: main.start_ride())
+	ride.add_theme_font_size_override("font_size", 22)
+	ride.add_theme_color_override("font_color", Color(1.0, 0.85, 0.3))
+	top.add_child(ride)
+
+	# --- Stats (top left) ------------------------------------------------------
+	var sp := _panel(editor_ui)
+	sp.position = Vector2(8, 70)
+	sp.custom_minimum_size = Vector2(290, 0)
+	sp.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	stats_label = RichTextLabel.new()
+	stats_label.bbcode_enabled = true
+	stats_label.fit_content = true
+	stats_label.scroll_active = false
+	stats_label.custom_minimum_size = Vector2(290, 0)
+	stats_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	stats_label.add_theme_font_size_override("normal_font_size", 15)
+	stats_label.add_theme_font_size_override("bold_font_size", 15)
+	sp.add_child(stats_label)
+
+	# --- Bottom bar ------------------------------------------------------------
+	var bottom := HBoxContainer.new()
+	bottom.add_theme_constant_override("separation", 6)
+	editor_ui.add_child(bottom)
+	bottom.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
+	bottom.offset_left = 8
+	bottom.offset_right = -8
+	bottom.offset_top = -60
+	bottom.offset_bottom = -8
+	bottom.add_child(_button("+ Point", func() -> void: main.add_point()))
+	bottom.add_child(_button("Delete", func() -> void: main.delete_point()))
+	var el := MenuButton.new()
+	el.text = "Add element ▾"
+	el.custom_minimum_size = Vector2(52, 52)
+	el.flat = false
+	var ep := el.get_popup()
+	ep.add_theme_font_size_override("font_size", 22)
+	for kind in [Elements.Kind.HILL, Elements.Kind.DROP, Elements.Kind.LOOP, Elements.Kind.HELIX_LEFT,
+			Elements.Kind.HELIX_RIGHT, Elements.Kind.TURN_LEFT, Elements.Kind.TURN_RIGHT, Elements.Kind.UTURN_LEFT,
+			Elements.Kind.UTURN_RIGHT, Elements.Kind.LIFT_HILL, Elements.Kind.LAUNCH, Elements.Kind.BRAKES, Elements.Kind.STRAIGHT]:
+		ep.add_item(Elements.NAMES[kind], kind)
+	ep.id_pressed.connect(func(id: int) -> void: main.insert_element(id))
+	bottom.add_child(el)
+	bottom.add_child(_button("Smooth", func() -> void: main.smooth()))
+	height_toggle = _button("↕ Height", func(on: bool) -> void: main.set_height_mode(on), true)
+	bottom.add_child(height_toggle)
+	snap_toggle = _button("Snap", func(on: bool) -> void: main.set_snap(on), true)
+	snap_toggle.set_pressed_no_signal(true)
+	bottom.add_child(snap_toggle)
+	var spacer2 := Control.new()
+	spacer2.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	spacer2.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	bottom.add_child(spacer2)
+	bottom.add_child(_button("Fit view", func() -> void: main.frame_track()))
+
+	# --- Graph -----------------------------------------------------------------
+	graph = TrackGraph.new()
+	editor_ui.add_child(graph)
+	graph.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
+	graph.offset_left = 8
+	graph.offset_right = -8
+	graph.offset_top = -158
+	graph.offset_bottom = -68
+	graph.picked.connect(func(s: float) -> void: main.focus_s(s, false))
+
+	# --- Point inspector (right) ------------------------------------------------
+	point_panel = _panel(editor_ui)
+	point_panel.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+	point_panel.offset_left = -270
+	point_panel.offset_right = -8
+	point_panel.offset_top = 70
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 6)
+	point_panel.add_child(v)
+	point_title = Label.new()
+	v.add_child(point_title)
+	segment_option = OptionButton.new()
+	segment_option.custom_minimum_size = Vector2(0, 48)
+	segment_option.focus_mode = Control.FOCUS_NONE
+	segment_option.get_popup().add_theme_font_size_override("font_size", 22)
+	for i in TrackPoint.SEGMENT_NAMES.size():
+		segment_option.add_item(TrackPoint.SEGMENT_NAMES[i], i)
+	segment_option.item_selected.connect(func(i: int) -> void:
+		if not _updating: main.set_segment(i))
+	v.add_child(segment_option)
+	auto_bank_check = CheckButton.new()
+	auto_bank_check.text = "Auto-bank"
+	auto_bank_check.focus_mode = Control.FOCUS_NONE
+	auto_bank_check.toggled.connect(func(on: bool) -> void:
+		if not _updating: main.set_auto_bank(on))
+	v.add_child(auto_bank_check)
+	bank_label = Label.new()
+	v.add_child(bank_label)
+	bank_slider = HSlider.new()
+	bank_slider.min_value = -360
+	bank_slider.max_value = 360
+	bank_slider.step = 5
+	bank_slider.custom_minimum_size = Vector2(0, 36)
+	bank_slider.value_changed.connect(func(val: float) -> void:
+		bank_label.text = "Bank: %d°" % int(val)
+		if not _updating: main.set_bank(val))
+	bank_slider.drag_ended.connect(func(_c: bool) -> void: main.commit_bank())
+	v.add_child(bank_slider)
+	height_label = Label.new()
+	v.add_child(height_label)
+	var hb := HBoxContainer.new()
+	hb.add_child(_button("▲ 1 m", func() -> void: main.nudge(Vector3.UP)))
+	hb.add_child(_button("▼ 1 m", func() -> void: main.nudge(Vector3.DOWN)))
+	v.add_child(hb)
+	v.add_child(_button("Focus", func() -> void: main.focus_selected()))
+	point_panel.visible = false
+
+
+func _on_file_menu(id: int) -> void:
+	match id:
+		0:
+			save_name.text = main.data.name
+			save_panel.visible = true
+		1:
+			_refresh_load_list()
+			load_panel.visible = true
+		2:
+			main.new_track(false)
+		3:
+			main.new_track(true)
+
+
+func show_editor() -> void:
+	editor_ui.visible = true
+	ride_ui.visible = false
+	results_panel.visible = false
+
+
+func set_busy(busy: bool) -> void:
+	busy_label.text = "analysing…" if busy else ""
+
+
+func refresh_history(can_undo: bool, can_redo: bool) -> void:
+	undo_btn.disabled = not can_undo
+	redo_btn.disabled = not can_redo
+
+
+func refresh_point(data: TrackData, index: int, spline: TrackSpline, record: RideRecord) -> void:
+	point_panel.visible = index >= 0 and index < data.points.size()
+	if not point_panel.visible:
+		graph.set_marker(-1.0)
+		return
+	_updating = true
+	var p := data.points[index]
+	point_title.text = "Point %d of %d" % [index + 1, data.points.size()]
+	segment_option.select(p.segment)
+	auto_bank_check.button_pressed = p.auto_bank
+	bank_slider.editable = not p.auto_bank
+	bank_slider.value = p.bank_deg
+	bank_label.text = "Bank: %d°" % int(p.bank_deg) if not p.auto_bank else "Bank: automatic"
+	var extra := ""
+	if spline != null and record != null and index < spline.point_s.size():
+		var s := spline.point_s[index]
+		var k := spline.index_at(s)
+		extra = "\n%.0f km/h · %.1f g vert · %.1f g lat" % [absf(record.sample_speed[k]) * 3.6, record.sample_g_vert[k], record.sample_g_lat[k]]
+		graph.set_marker(s)
+	height_label.text = "Height: %.1f m%s" % [p.position.y, extra]
+	_updating = false
+
+
+func update_analysis(a: TrackAnalyzer) -> void:
+	if a == null or not a.valid:
+		stats_label.text = "[b]Track needs at least 4 points[/b]"
+		graph.set_data(null, null, [] as Array[Dictionary])
+		return
+	var st := a.ratings.stats
+	var r := a.ratings
+	var status := "[color=#6f6]✓ Completes the circuit[/color]"
+	if not a.record.completed:
+		status = "[color=#f66]✗ Stalls at %.0f m[/color]" % a.record.stall_s
+	elif a.record.rollbacks > 0:
+		status = "[color=#fc4]⚠ Rolls back at %.0f m[/color]" % a.record.stall_s
+	var reds := 0
+	var yellows := 0
+	for p in r.problems:
+		if p["severity"] == GLimits.Zone.DANGER: reds += 1
+		else: yellows += 1
+	var t := "[b]%s[/b]\n%s\n" % [main.data.name, status]
+	t += "Length %.0f m · Height %.0f m\n" % [st["length"], st["max_height"]]
+	t += "Top speed %.0f km/h · %.0f s\n" % [st["max_speed"] * 3.6, st["duration"]]
+	t += "G: %s / %s · lat %s\n" % [_gfmt(st["max_g_vert"], GLimits.vertical_zone(st["max_g_vert"])),
+		_gfmt(st["min_g_vert"], GLimits.vertical_zone(st["min_g_vert"])), _gfmt(st["max_g_lat"], GLimits.lateral_zone(st["max_g_lat"]))]
+	t += "Airtime %.1f s · Inversions %d\n" % [st["airtime"], st["inversions"]]
+	t += "Thrill [b]%.1f[/b] · Intensity [b]%.1f[/b] · Nausea [b]%.1f[/b]" % [r.thrill, r.intensity, r.nausea]
+	if reds + yellows > 0:
+		t += "\n[color=#f66]%d red[/color] · [color=#fc4]%d yellow[/color] spots" % [reds, yellows]
+	stats_label.text = t
+	graph.set_data(a.spline, a.record, r.problems)
+
+
+static func _gfmt(g: float, zone: int) -> String:
+	return "[color=#%s]%.1f[/color]" % [GLimits.zone_color(zone).to_html(false), g]
+
+
+# -----------------------------------------------------------------------------
+# Ride UI
+# -----------------------------------------------------------------------------
+
+func _build_ride_ui() -> void:
+	ride_ui = Control.new()
+	ride_ui.set_anchors_preset(Control.PRESET_FULL_RECT)
+	ride_ui.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	root.add_child(ride_ui)
+	var p := _panel(ride_ui)
+	p.position = Vector2(8, 8)
+	p.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var v := VBoxContainer.new()
+	p.add_child(v)
+	speed_label = Label.new()
+	speed_label.add_theme_font_size_override("font_size", 40)
+	v.add_child(speed_label)
+	g_label = RichTextLabel.new()
+	g_label.bbcode_enabled = true
+	g_label.fit_content = true
+	g_label.scroll_active = false
+	g_label.custom_minimum_size = Vector2(230, 0)
+	g_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	g_label.add_theme_font_size_override("normal_font_size", 20)
+	v.add_child(g_label)
+	ride_info = Label.new()
+	ride_info.add_theme_font_size_override("font_size", 15)
+	v.add_child(ride_info)
+	var bar := HBoxContainer.new()
+	bar.add_theme_constant_override("separation", 6)
+	bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	ride_ui.add_child(bar)
+	bar.set_anchors_preset(Control.PRESET_TOP_WIDE)
+	bar.offset_top = 8
+	bar.offset_left = 8
+	bar.offset_right = -8
+	var spacer := Control.new()
+	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	spacer.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	bar.add_child(spacer)
+	cam_btn = _button("Camera: POV", func() -> void: main.toggle_ride_camera())
+	bar.add_child(cam_btn)
+	fast_btn = _button("Speed 1×", func() -> void: main.cycle_ride_speed())
+	bar.add_child(fast_btn)
+	bar.add_child(_button("■ Stop", func() -> void: main.stop_ride()))
+
+
+func show_ride() -> void:
+	editor_ui.visible = false
+	results_panel.visible = false
+	ride_ui.visible = true
+
+
+func set_ride_camera_label(pov: bool) -> void:
+	cam_btn.text = "Camera: POV" if pov else "Camera: Chase"
+
+
+func set_ride_speed_label(mult: float) -> void:
+	fast_btn.text = "Speed %d×" % int(mult)
+
+
+func update_ride(sim: TrainSim, sick: int, riders: int) -> void:
+	speed_label.text = "%d km/h" % roundi(absf(sim.v) * 3.6)
+	var g := sim.spline.g_forces_at(sim.car_s(0), sim.v, sim.a_t)
+	g_label.text = "Vertical %s g\nLateral %s g" % [_gfmt(g.x, GLimits.vertical_zone(g.x)), _gfmt(g.y, GLimits.lateral_zone(g.y))]
+	var seg := sim.spline.segment_at(sim.middle_s())
+	var what := ""
+	match seg:
+		TrackPoint.Segment.LIFT: what = " · on the lift"
+		TrackPoint.Segment.LAUNCH: what = " · LAUNCH!"
+		TrackPoint.Segment.BRAKE: what = " · braking"
+	if sim.v < -0.1:
+		what = " · ROLLING BACK"
+	ride_info.text = "%.0f s · %d%% done%s%s" % [sim.time, clampi(int((sim.s - sim.start_s) / sim.spline.length * 100.0), 0, 100), what,
+		(" · %d/%d riders sick" % [sick, riders]) if sick > 0 else ""]
+
+
+# -----------------------------------------------------------------------------
+# Results
+# -----------------------------------------------------------------------------
+
+func _build_results() -> void:
+	results_panel = _panel(root)
+	results_panel.set_anchors_preset(Control.PRESET_FULL_RECT)
+	results_panel.offset_left = 60
+	results_panel.offset_right = -60
+	results_panel.offset_top = 30
+	results_panel.offset_bottom = -30
+	var outer := VBoxContainer.new()
+	results_panel.add_child(outer)
+	var scroll := ScrollContainer.new()
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	outer.add_child(scroll)
+	results_box = VBoxContainer.new()
+	results_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	results_box.add_theme_constant_override("separation", 8)
+	scroll.add_child(results_box)
+	var buttons := HBoxContainer.new()
+	buttons.alignment = BoxContainer.ALIGNMENT_CENTER
+	buttons.add_theme_constant_override("separation", 12)
+	buttons.add_child(_button("Ride again", func() -> void: main.start_ride()))
+	buttons.add_child(_button("Back to editor", func() -> void: main.back_to_editor()))
+	outer.add_child(buttons)
+	results_panel.visible = false
+
+
+func show_results(r: RideRatings, completed: bool, sick: int, riders: int) -> void:
+	editor_ui.visible = false
+	ride_ui.visible = false
+	results_panel.visible = true
+	for c in results_box.get_children():
+		c.queue_free()
+	var title := Label.new()
+	title.text = "Ride complete" if completed else "The train didn't make it"
+	title.add_theme_font_size_override("font_size", 30)
+	results_box.add_child(title)
+	var verdict := Label.new()
+	verdict.text = r.verdict
+	verdict.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	results_box.add_child(verdict)
+
+	var ratings := HBoxContainer.new()
+	ratings.add_theme_constant_override("separation", 16)
+	results_box.add_child(ratings)
+	ratings.add_child(_rating_card("Thrill", r.thrill, r.thrill_parts, Color(1.0, 0.6, 0.2)))
+	ratings.add_child(_rating_card("Intensity", r.intensity, r.intensity_parts, Color(0.95, 0.3, 0.35)))
+	ratings.add_child(_rating_card("Nausea", r.nausea, r.nausea_parts, Color(0.45, 0.85, 0.35)))
+
+	var st := r.stats
+	var stats := Label.new()
+	stats.text = "Top speed %.0f km/h · Length %.0f m · Ride time %.0f s · Biggest drop %.0f m\nMax G %.1f · Min G %.1f · Max lateral %.1f · Airtime %.1f s · Inversions %d%s" % [
+		st["max_speed"] * 3.6, st["length"], st["duration"], st["max_drop"],
+		st["max_g_vert"], st["min_g_vert"], st["max_g_lat"], st["airtime"], st["inversions"],
+		("\n%d of %d riders felt sick" % [sick, riders]) if sick > 0 else ""]
+	stats.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	stats.add_theme_font_size_override("font_size", 16)
+	results_box.add_child(stats)
+
+	var ph := Label.new()
+	ph.text = "Problem spots" if not r.problems.is_empty() else "No problem spots: nice work!"
+	ph.add_theme_font_size_override("font_size", 22)
+	results_box.add_child(ph)
+	for p in r.problems.slice(0, 12):
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 10)
+		var dot := ColorRect.new()
+		dot.color = GLimits.zone_color(p["severity"])
+		dot.custom_minimum_size = Vector2(14, 14)
+		dot.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		row.add_child(dot)
+		var l := Label.new()
+		l.text = "At %.0f m: %s" % [p["s"], p["message"]]
+		l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		l.add_theme_font_size_override("font_size", 16)
+		row.add_child(l)
+		var s: float = p["s"]
+		row.add_child(_button("Show", func() -> void: main.focus_s(s, true)))
+		results_box.add_child(row)
+
+
+func _rating_card(title: String, value: float, parts: Array[Dictionary], color: Color) -> Control:
+	var v := VBoxContainer.new()
+	v.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var t := Label.new()
+	t.text = "%s  %.1f  (%s)" % [title, value, RideRatings.label_for(value)]
+	t.add_theme_font_size_override("font_size", 20)
+	v.add_child(t)
+	var bar := ProgressBar.new()
+	bar.max_value = 10.0
+	bar.value = value
+	bar.show_percentage = false
+	bar.custom_minimum_size = Vector2(0, 14)
+	var fill := StyleBoxFlat.new()
+	fill.bg_color = color
+	fill.set_corner_radius_all(4)
+	bar.add_theme_stylebox_override("fill", fill)
+	v.add_child(bar)
+	for p in parts:
+		var l := Label.new()
+		var val: float = p["value"]
+		l.text = "%s %+.1f" % [p["label"], val]
+		l.add_theme_font_size_override("font_size", 14)
+		l.modulate = Color(1, 1, 1, 0.85) if val >= 0.0 else Color(1, 0.6, 0.6)
+		v.add_child(l)
+	return v
+
+
+# -----------------------------------------------------------------------------
+# Save / load dialogs
+# -----------------------------------------------------------------------------
+
+func _build_dialogs() -> void:
+	save_panel = _dialog("Save coaster")
+	var sv: VBoxContainer = save_panel.get_child(0)
+	save_name = LineEdit.new()
+	save_name.placeholder_text = "Coaster name"
+	save_name.custom_minimum_size = Vector2(380, 48)
+	sv.add_child(save_name)
+	var sb := HBoxContainer.new()
+	sb.alignment = BoxContainer.ALIGNMENT_END
+	sb.add_child(_button("Cancel", func() -> void: save_panel.visible = false))
+	sb.add_child(_button("Save", func() -> void:
+		main.save_track(save_name.text)
+		save_panel.visible = false))
+	sv.add_child(sb)
+
+	load_panel = _dialog("Load coaster")
+	var lv: VBoxContainer = load_panel.get_child(0)
+	load_list = ItemList.new()
+	load_list.custom_minimum_size = Vector2(420, 260)
+	load_list.add_theme_font_size_override("font_size", 20)
+	lv.add_child(load_list)
+	var lb := HBoxContainer.new()
+	lb.alignment = BoxContainer.ALIGNMENT_END
+	lb.add_child(_button("Delete", func() -> void:
+		var sel := load_list.get_selected_items()
+		if sel.size() > 0:
+			main.delete_saved(_load_files[sel[0]])
+			_refresh_load_list()))
+	lb.add_child(_button("Cancel", func() -> void: load_panel.visible = false))
+	lb.add_child(_button("Load", func() -> void:
+		var sel := load_list.get_selected_items()
+		if sel.size() > 0:
+			main.load_saved(_load_files[sel[0]])
+			load_panel.visible = false))
+	lv.add_child(lb)
+
+
+func _dialog(title: String) -> PanelContainer:
+	var p := PanelContainer.new()
+	root.add_child(p)
+	p.set_anchors_preset(Control.PRESET_CENTER)
+	p.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	p.grow_vertical = Control.GROW_DIRECTION_BOTH
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 10)
+	p.add_child(v)
+	var l := Label.new()
+	l.text = title
+	l.add_theme_font_size_override("font_size", 24)
+	v.add_child(l)
+	p.visible = false
+	return p
+
+
+func _refresh_load_list() -> void:
+	load_list.clear()
+	_load_files.clear()
+	for e in CoasterStorage.list():
+		load_list.add_item(e["name"])
+		_load_files.append(e["file"])
+	if _load_files.is_empty():
+		load_list.add_item("(no saved coasters yet)")
+		load_list.set_item_disabled(0, true)
+
+
+func any_dialog_open() -> bool:
+	return save_panel.visible or load_panel.visible
