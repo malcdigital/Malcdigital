@@ -1,0 +1,4 @@
+# Godot editor cache and per-user state
+.godot/
+export_presets.cfg
+/build/
