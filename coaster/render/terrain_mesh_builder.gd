@@ -1,0 +1,67 @@
+class_name TerrainMeshBuilder
+extends RefCounted
+## Builds the terrain mesh arrays (safe on a worker thread). Colour comes from
+## height and slope: sand by the water, grass, rock on steep faces, and a
+## light path colour inside contract zones.
+
+const GRASS := Color(0.27, 0.45, 0.2)
+const GRASS_HIGH := Color(0.36, 0.5, 0.24)
+const ROCK := Color(0.47, 0.43, 0.38)
+const SAND := Color(0.76, 0.69, 0.5)
+const LAKE_BED := Color(0.35, 0.37, 0.28)
+const PATH := Color(0.78, 0.7, 0.55)
+
+
+static func build_arrays(t: TerrainData, h: PackedFloat32Array, zones: Array) -> Array:
+	var res := TerrainData.RES
+	var cell := TerrainData.CELL
+	var verts := PackedVector3Array()
+	var normals := PackedVector3Array()
+	var colors := PackedColorArray()
+	var indices := PackedInt32Array()
+	verts.resize(res * res)
+	normals.resize(res * res)
+	colors.resize(res * res)
+	var water := t.water_level if t.has_water() else -1e9
+	for j in res:
+		for i in res:
+			var idx := j * res + i
+			var y := h[idx]
+			var w := t.grid_to_world(i, j)
+			verts[idx] = Vector3(w.x, y, w.y)
+			var hl := h[j * res + maxi(i - 1, 0)]
+			var hr := h[j * res + mini(i + 1, res - 1)]
+			var hd := h[maxi(j - 1, 0) * res + i]
+			var hu := h[mini(j + 1, res - 1) * res + i]
+			var n := Vector3(hl - hr, 2.0 * cell, hd - hu).normalized()
+			normals[idx] = n
+			var c := GRASS.lerp(GRASS_HIGH, clampf(y / 30.0, 0.0, 1.0))
+			if y < water + 0.6:
+				c = SAND if y > water - 0.8 else LAKE_BED
+			c = c.lerp(ROCK, smoothstep(0.72, 0.5, n.y))
+			for z in zones:
+				var rect: Rect2 = z["rect"]
+				if rect.has_point(w):
+					c = PATH
+			# A little variation so large flat areas don't look plastic.
+			var v := 0.93 + 0.07 * sin(w.x * 0.11 + sin(w.y * 0.07) * 3.0)
+			colors[idx] = Color(c.r * v, c.g * v, c.b * v)
+	for j in res - 1:
+		for i in res - 1:
+			var a := j * res + i
+			var b := a + 1
+			var c := a + res
+			var d := c + 1
+			indices.append(a)
+			indices.append(b)
+			indices.append(d)
+			indices.append(a)
+			indices.append(d)
+			indices.append(c)
+	var arr := []
+	arr.resize(Mesh.ARRAY_MAX)
+	arr[Mesh.ARRAY_VERTEX] = verts
+	arr[Mesh.ARRAY_NORMAL] = normals
+	arr[Mesh.ARRAY_COLOR] = colors
+	arr[Mesh.ARRAY_INDEX] = indices
+	return arr

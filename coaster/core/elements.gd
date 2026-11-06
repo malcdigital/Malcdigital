@@ -7,7 +7,7 @@ extends RefCounted
 ## Points are placed so the Catmull-Rom spline through them gives the right
 ## shape; the entry point itself is not included.
 
-enum Kind { HILL, DROP, LOOP, HELIX_LEFT, HELIX_RIGHT, TURN_LEFT, TURN_RIGHT, LIFT_HILL, LAUNCH, STRAIGHT, BRAKES, UTURN_LEFT, UTURN_RIGHT }
+enum Kind { HILL, DROP, LOOP, HELIX_LEFT, HELIX_RIGHT, TURN_LEFT, TURN_RIGHT, LIFT_HILL, LAUNCH, STRAIGHT, BRAKES, UTURN_LEFT, UTURN_RIGHT, SPLASHDOWN, HEARTLINE_ROLL }
 
 const NAMES := {
 	Kind.HILL: "Airtime hill",
@@ -23,6 +23,8 @@ const NAMES := {
 	Kind.BRAKES: "Brake run",
 	Kind.UTURN_LEFT: "Turn left 180°",
 	Kind.UTURN_RIGHT: "Turn right 180°",
+	Kind.SPLASHDOWN: "Splashdown",
+	Kind.HEARTLINE_ROLL: "Heartline roll",
 }
 
 const MIN_HEIGHT := 1.0
@@ -30,8 +32,9 @@ const MIN_HEIGHT := 1.0
 
 ## `speed` is the expected train speed at the entry (m/s); some elements use
 ## it to pick a sensible size, which is the "snap to a good element" assist.
-static func build(kind: int, entry: Vector3, forward: Vector3, speed: float) -> Array[TrackPoint]:
-	var pts := _build(kind, entry, forward, speed)
+## `ctx` can carry {"water_level": float} for the splashdown.
+static func build(kind: int, entry: Vector3, forward: Vector3, speed: float, ctx: Dictionary = {}) -> Array[TrackPoint]:
+	var pts := _build(kind, entry, forward, speed, ctx)
 	# Interior points of dense, generated shapes are "minor": the editor
 	# shows them as small dots so the element reads as one piece.
 	if pts.size() > 4:
@@ -40,7 +43,7 @@ static func build(kind: int, entry: Vector3, forward: Vector3, speed: float) -> 
 	return pts
 
 
-static func _build(kind: int, entry: Vector3, forward: Vector3, speed: float) -> Array[TrackPoint]:
+static func _build(kind: int, entry: Vector3, forward: Vector3, speed: float, ctx: Dictionary) -> Array[TrackPoint]:
 	forward = Vector3(forward.x, 0.0, forward.z)
 	if forward.length_squared() < 1e-6:
 		forward = Vector3.FORWARD
@@ -64,7 +67,9 @@ static func _build(kind: int, entry: Vector3, forward: Vector3, speed: float) ->
 			for p in prof:
 				top = maxf(top, p.y)
 			# Sideways shift so the exit runs beside the entry instead of into it.
-			return _profile(entry, forward, right, prof, clampf(top * 0.1, 2.2, 3.4), 10.0, 6.0)
+			# Wing seats stick out beside the track: give their legs room.
+			var wing: float = ctx.get("seat_offset", 0.0)
+			return _profile(entry, forward, right, prof, clampf(top * 0.1, 2.2, 3.4) + wing * 2.4, 10.0, 6.0)
 		Kind.HELIX_LEFT, Kind.HELIX_RIGHT:
 			var dir := -1.0 if kind == Kind.HELIX_LEFT else 1.0
 			# Radius for ~1.8 g of sideways pull, which auto-bank turns into a
@@ -88,6 +93,28 @@ static func _build(kind: int, entry: Vector3, forward: Vector3, speed: float) ->
 			var pts := _pts(entry, forward, right, [[12.0, 0.0, 0.0], [55.0, 0.0, 0.0], [70.0, 0.0, 0.0]])
 			pts[0].segment = TrackPoint.Segment.LAUNCH
 			return pts
+		Kind.SPLASHDOWN:
+			# Dip so only the bottom of the car (about 0.45 m) enters the water.
+			var water: float = ctx.get("water_level", -1000.0)
+			var bottom := water + SiteAnalysis.CAR_BOTTOM - 0.45 if water > -999.0 else MIN_HEIGHT
+			var d := maxf(entry.y - bottom, 0.0)
+			var len := maxf(60.0, d * 6.0)
+			var out: Array[TrackPoint] = []
+			for o in [[0.2, 0.15], [0.38, 0.8], [0.5, 1.0], [0.62, 0.8], [0.8, 0.15], [1.0, 0.0], [1.15, 0.0]]:
+				out.append(TrackPoint.new(entry + forward * (len * o[0]) + Vector3.UP * (-d * o[1])))
+			return out
+		Kind.HEARTLINE_ROLL:
+			# A full roll about the riders' heartline on straight track: banking
+			# goes 0 -> 360° across the points (auto-bank off).
+			var len := clampf(v * 2.2, 30.0, 60.0)
+			var out: Array[TrackPoint] = []
+			for i in 6:
+				var f := float(i) / 5.0
+				var p := TrackPoint.new(entry + forward * (6.0 + len * f), TrackPoint.Segment.NORMAL, 360.0 * smoothstep(0.0, 1.0, f), false)
+				out.append(p)
+			out.append(TrackPoint.new(entry + forward * (len + 16.0), TrackPoint.Segment.NORMAL, 360.0, true))
+			out[0].bank_deg = 0.0
+			return out
 		Kind.BRAKES:
 			var pts := _pts(entry, forward, right, [[8.0, 0.0, 0.0], [30.0, 0.0, 0.0]])
 			pts[0].segment = TrackPoint.Segment.BRAKE

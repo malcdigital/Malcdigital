@@ -60,6 +60,8 @@ func _advance(t0: int, budget: int) -> void:
 			if not data.is_valid() or not result.spline.bake(data):
 				stage = Stage.DONE
 				return
+			result.site = SiteAnalysis.new()
+			result.site.classify(result.spline, data)
 			_sim = TrainSim.new()
 			_sim.setup(result.spline, data, true, SPEED_PASS_DT)
 			stage = Stage.SPEED_PASS
@@ -75,16 +77,24 @@ func _advance(t0: int, budget: int) -> void:
 				result.record = _sim.record
 				stage = Stage.SCORE
 		Stage.SCORE:
-			result.ratings = RideScorer.score(result.record, result.spline)
+			result.site.build(result.spline, data, result.record, Contracts.zones(data.contract_id))
+			result.ratings = RideScorer.score(result.record, result.spline, data, result.site)
+			var c := CostModel.estimate(data, result.spline, result.site)
+			result.cost = c["total"]
+			result.cost_parts.assign(c["parts"])
+			var h := 0.0
+			for k in result.spline.count:
+				h = maxf(h, result.spline.positions[k].y - result.site.ground[k])
+			result.max_height_above_ground = h
 			result.valid = true
 			if build_meshes:
-				_colors = TrackOverlay.colors(overlay_mode, result.spline, result.record)
+				_colors = TrackOverlay.colors(overlay_mode, result.spline, result.record, float(data.type_info()["g_scale"]), data.type_info()["spine"])
 				stage = Stage.MESH
 			else:
 				stage = Stage.DONE
 		Stage.MESH:
 			if _chunk < TrackMeshBuilder.chunk_count(result.spline):
-				chunks.append(TrackMeshBuilder.build_chunk(result.spline, _colors, _chunk))
+				chunks.append(TrackMeshBuilder.build_chunk(result.spline, _colors, _chunk, data.type_info(), result.site.env))
 				_chunk += 1
 			else:
 				stage = Stage.DONE

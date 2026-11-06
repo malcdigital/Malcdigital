@@ -33,29 +33,47 @@ static func chunk_count(spline: TrackSpline) -> int:
 
 
 ## One chunk at every LOD: an Array (per LOD) of surface dictionaries
-## {"steel": surface_arrays, "spine": surface_arrays}.
-static func build_chunk(spline: TrackSpline, spine_colors: PackedColorArray, index: int) -> Array:
+## {"steel": arrays, "spine": arrays, "tunnel": arrays}.
+## `ty` is the coaster type (CoasterTypes), `env` the per-sample terrain
+## classification from SiteAnalysis (for tunnels).
+static func build_chunk(spline: TrackSpline, spine_colors: PackedColorArray, index: int,
+		ty: Dictionary = {}, env: PackedByteArray = PackedByteArray()) -> Array:
+	if ty.is_empty():
+		ty = CoasterTypes.get_type(CoasterTypes.Id.STEEL)
 	var start := index * CHUNK_SAMPLES
 	var end := mini(start + CHUNK_SAMPLES, spline.count)   # inclusive end sample (wraps at count)
 	var lods := []
 	for lod in LODS:
-		lods.append(_build_chunk(spline, spine_colors, start, end, lod))
+		lods.append(_build_chunk(spline, spine_colors, start, end, lod, ty, env))
 	return lods
 
 
 ## All chunks at once.
-static func build_arrays(spline: TrackSpline, spine_colors: PackedColorArray) -> Array:
+static func build_arrays(spline: TrackSpline, spine_colors: PackedColorArray, ty: Dictionary = {}, env: PackedByteArray = PackedByteArray()) -> Array:
 	var chunks := []
 	for i in chunk_count(spline):
-		chunks.append(build_chunk(spline, spine_colors, i))
+		chunks.append(build_chunk(spline, spine_colors, i, ty, env))
 	return chunks
 
 
-static func _build_chunk(sp: TrackSpline, colors: PackedColorArray, k0: int, k1: int, lod: Dictionary) -> Dictionary:
+const TUNNEL_RADIUS := 3.2
+const TUNNEL_COLOR := Color(0.32, 0.3, 0.28)
+
+
+static func _build_chunk(sp: TrackSpline, colors: PackedColorArray, k0: int, k1: int, lod: Dictionary,
+		ty: Dictionary, env: PackedByteArray) -> Dictionary:
 	var stride: int = lod["stride"]
 	var steel := _Surface.new()
 	var spine := _Surface.new()
-	# Sample indices for this chunk, always including both ends so chunks join.
+	var tunnel := _Surface.new()
+	var style: String = ty["style"]
+	var rail_col: Color = ty["rail"]
+	var tie_col: Color = ty["tie"]
+	var paint: Color = ty["spine"]
+	# Flying coasters hang the train under the rails, so the structure sits
+	# above the heartline instead of below it.
+	var dir := 1.0 if style == "flying" else -1.0
+	var wood := style == "wood"
 	var ks := PackedInt32Array()
 	var k := k0
 	while k < k1:
@@ -68,43 +86,74 @@ static func _build_chunk(sp: TrackSpline, colors: PackedColorArray, k0: int, k1:
 	var rings_l := []
 	var rings_r := []
 	var rings_s := []
+	var rings_t := []
 	for idx in ks.size():
 		var kk := ks[idx]
 		var p := sp.positions[kk]
 		var u := sp.ups[kk]
 		var r := sp.rights[kk]
-		var c := p - u * HEART_TO_RAIL
-		var col := colors[kk] if kk < colors.size() else Color(0.85, 0.3, 0.15)
-		rings_l.append(steel.ring(c - r * GAUGE_HALF, r, u, RAIL_RADIUS, rail_sides, Color.WHITE, 0.0))
-		rings_r.append(steel.ring(c + r * GAUGE_HALF, r, u, RAIL_RADIUS, rail_sides, Color.WHITE, 0.0))
-		rings_s.append(spine.ring(c - u * SPINE_DROP, r, u, SPINE_HALF * 1.41, spine_sides, col, PI * 0.25))
+		var c := p + u * (HEART_TO_RAIL * dir)
+		var col := colors[kk] if kk < colors.size() else paint
+		if wood:
+			# Flat steel strap rails on a wooden deck.
+			rings_l.append(steel.ring(c - r * GAUGE_HALF, r, u, 0.1, 4, rail_col, PI * 0.25))
+			rings_r.append(steel.ring(c + r * GAUGE_HALF, r, u, 0.1, 4, rail_col, PI * 0.25))
+		else:
+			rings_l.append(steel.ring(c - r * GAUGE_HALF, r, u, RAIL_RADIUS, rail_sides, rail_col, 0.0))
+			rings_r.append(steel.ring(c + r * GAUGE_HALF, r, u, RAIL_RADIUS, rail_sides, rail_col, 0.0))
+			rings_s.append(spine.ring(c + u * (SPINE_DROP * dir), r, u, SPINE_HALF * 1.41, spine_sides, col, PI * 0.25))
+		if env.size() == sp.count and env[kk] == SiteAnalysis.Env.TUNNEL:
+			rings_t.append(tunnel.ring(p + u * 0.2, r, u, TUNNEL_RADIUS, 10 if stride == 1 else 6, TUNNEL_COLOR, 0.0))
+		else:
+			rings_t.append(-1)
 	for idx in range(1, ks.size()):
-		steel.connect_rings(rings_l[idx - 1], rings_l[idx], rail_sides)
-		steel.connect_rings(rings_r[idx - 1], rings_r[idx], rail_sides)
-		spine.connect_rings(rings_s[idx - 1], rings_s[idx], spine_sides)
+		steel.connect_rings(rings_l[idx - 1], rings_l[idx], 4 if wood else rail_sides)
+		steel.connect_rings(rings_r[idx - 1], rings_r[idx], 4 if wood else rail_sides)
+		if not wood:
+			spine.connect_rings(rings_s[idx - 1], rings_s[idx], spine_sides)
+		if rings_t[idx - 1] >= 0 and rings_t[idx] >= 0:
+			# Seen from inside: reversed winding.
+			tunnel.connect_rings(rings_t[idx], rings_t[idx - 1], 10 if stride == 1 else 6)
+	# Flip tunnel normals to face inwards.
+	for i in tunnel.normals.size():
+		tunnel.normals[i] = -tunnel.normals[i]
 
-	# Cross ties: a flat bar between the rails and a web down to the spine.
+	# Cross ties. Wooden track: dense, wide ties that carry the overlay colour.
 	var every: int = lod["tie_every"]
+	if wood:
+		every = maxi(1, every / 2)
 	var first_tie := k0 + posmod(-k0, every)
 	for kk in range(first_tie, k1, every):
 		var p := sp.positions[kk]
 		var t := sp.tangents[kk]
 		var u := sp.ups[kk]
 		var r := sp.rights[kk]
-		var c := p - u * (HEART_TO_RAIL + 0.09)
-		steel.box(c, r * (GAUGE_HALF + 0.02), u * 0.05, t * 0.07)
-		steel.box(c - u * (SPINE_DROP * 0.5), r * 0.05, u * (SPINE_DROP * 0.5), t * 0.06)
-	return {"steel": steel.arrays(), "spine": spine.arrays()}
+		if wood:
+			var col := colors[kk] if kk < colors.size() else tie_col
+			var c := p + u * ((HEART_TO_RAIL + 0.18) * dir)
+			steel.box(c, r * 0.95, u * 0.09, t * 0.11, col.lerp(tie_col, 0.35))
+		else:
+			var c := p + u * ((HEART_TO_RAIL + 0.09) * dir)
+			steel.box(c, r * (GAUGE_HALF + 0.02), u * 0.05, t * 0.07, tie_col)
+			steel.box(c + u * (SPINE_DROP * 0.5 * dir), r * 0.05, u * (SPINE_DROP * 0.5), t * 0.06, tie_col)
+	return {"steel": steel.arrays(), "spine": spine.arrays(), "tunnel": tunnel.arrays()}
 
 
-static func to_mesh(surfaces: Dictionary, steel_mat: Material, spine_mat: Material) -> ArrayMesh:
+static func to_mesh(surfaces: Dictionary, steel_mat: Material, spine_mat: Material, tunnel_mat: Material = null) -> ArrayMesh:
 	var mesh := ArrayMesh.new()
-	for key in ["steel", "spine"]:
+	for key in ["steel", "spine", "tunnel"]:
+		if not surfaces.has(key):
+			continue
 		var arr: Array = surfaces[key]
 		if (arr[Mesh.ARRAY_VERTEX] as PackedVector3Array).is_empty():
 			continue
 		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arr)
-		mesh.surface_set_material(mesh.get_surface_count() - 1, steel_mat if key == "steel" else spine_mat)
+		var mat := steel_mat
+		if key == "spine":
+			mat = spine_mat
+		elif key == "tunnel":
+			mat = tunnel_mat if tunnel_mat != null else steel_mat
+		mesh.surface_set_material(mesh.get_surface_count() - 1, mat)
 	return mesh
 
 
@@ -141,21 +190,21 @@ class _Surface:
 			indices.append(a + j)
 
 	## Box centred at c with half-extent axis vectors x, y, z.
-	func box(c: Vector3, x: Vector3, y: Vector3, z: Vector3) -> void:
-		_face(c, x, y, z)
-		_face(c, -x, y, -z)
-		_face(c, y, z, x)
-		_face(c, -y, z, -x)
-		_face(c, z, x, y)
-		_face(c, -z, x, -y)
+	func box(c: Vector3, x: Vector3, y: Vector3, z: Vector3, col: Color = Color.WHITE) -> void:
+		_face(c, x, y, z, col)
+		_face(c, -x, y, -z, col)
+		_face(c, y, z, x, col)
+		_face(c, -y, z, -x, col)
+		_face(c, z, x, y, col)
+		_face(c, -z, x, -y, col)
 
-	func _face(c: Vector3, nrm: Vector3, a: Vector3, b: Vector3) -> void:
+	func _face(c: Vector3, nrm: Vector3, a: Vector3, b: Vector3, col: Color) -> void:
 		var base := verts.size()
 		var nn := nrm.normalized()
-		_add(c + nrm - a - b, nn, Color.WHITE)
-		_add(c + nrm + a - b, nn, Color.WHITE)
-		_add(c + nrm + a + b, nn, Color.WHITE)
-		_add(c + nrm - a + b, nn, Color.WHITE)
+		_add(c + nrm - a - b, nn, col)
+		_add(c + nrm + a - b, nn, col)
+		_add(c + nrm + a + b, nn, col)
+		_add(c + nrm - a + b, nn, col)
 		indices.append(base)
 		indices.append(base + 2)
 		indices.append(base + 1)

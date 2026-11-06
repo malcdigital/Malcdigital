@@ -26,6 +26,8 @@ var completed := false
 var stalled := false
 var stall_s := -1.0          # where the train first started rolling back (m, wrapped)
 var rollbacks := 0
+var splashes := 0
+var splash_s := PackedFloat32Array()
 var duration := 0.0
 
 

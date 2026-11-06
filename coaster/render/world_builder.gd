@@ -35,13 +35,3 @@ static func build(parent: Node3D) -> void:
 	sun.directional_shadow_max_distance = 160.0
 	sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_2_SPLITS
 	parent.add_child(sun)
-
-	var ground := MeshInstance3D.new()
-	var plane := PlaneMesh.new()
-	plane.size = Vector2(3000, 3000)
-	ground.mesh = plane
-	var mat := ShaderMaterial.new()
-	mat.shader = load("res://render/ground.gdshader")
-	ground.material_override = mat
-	ground.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-	parent.add_child(ground)

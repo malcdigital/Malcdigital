@@ -51,8 +51,22 @@ func update(sim: TrainSim, dt: float) -> void:
 		var xf := sp.transform_at(sim.car_s(0))
 		if not _dragging:
 			_look = _look.lerp(Vector2.ZERO, 1.0 - exp(-1.5 * dt))
-		var b := xf.basis * Basis(Vector3.UP, _look.x) * Basis(Vector3.RIGHT, _look.y)
-		global_transform = Transform3D(b, xf * Vector3(0, 0.25, -0.6))
+		var ty := sim.data.type_info()
+		var eye := Vector3(0, 0.25, -0.6)
+		var pitch := 0.0
+		if ty["prone"]:
+			eye = Vector3(0, -0.25, -1.0)       # face-down: eyes just ahead of the head
+			pitch = -0.3                         # looking a little down, like a flyer
+		elif float(ty["seat_offset"]) > 0.0:
+			eye = Vector3(float(ty["seat_offset"]) + 0.35, 0.25, -0.2)   # outer wing seat
+		var b := xf.basis * Basis(Vector3.UP, _look.x) * Basis(Vector3.RIGHT, _look.y + pitch)
+		var pos := xf * eye
+		# Wooden coasters shake: a little speed-scaled camera rattle.
+		var rattle: float = ty["rattle"]
+		if rattle > 0.0:
+			var amp := rattle * clampf(absf(sim.v) / 25.0, 0.0, 1.0) * 0.035
+			pos += b * Vector3(sin(sim.time * 61.0), sin(sim.time * 47.0 + 1.3), 0.0) * amp
+		global_transform = Transform3D(b, pos)
 	else:
 		var back := sp.transform_at(sim.car_s(sim.data.num_cars - 1))
 		var mid := sp.position_at(sim.middle_s())

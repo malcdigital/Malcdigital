@@ -1,14 +1,18 @@
 shader_type spatial;
-// Grass-coloured ground with a faint 10 m grid for judging size and height.
+// Terrain: vertex colours from TerrainMeshBuilder (grass/rock/sand/path) with
+// a faint 10 m grid for judging size and height. The endless ground beyond the
+// terrain uses the flat grass colours instead of vertex colours.
 
+uniform bool use_vertex_color = true;
 uniform vec3 grass_a : source_color = vec3(0.24, 0.42, 0.19);
 uniform vec3 grass_b : source_color = vec3(0.21, 0.38, 0.17);
-uniform vec3 line_color : source_color = vec3(0.32, 0.5, 0.26);
 
 varying vec3 world_pos;
+varying vec3 vcol;
 
 void vertex() {
 	world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
+	vcol = COLOR.rgb;
 }
 
 float grid(vec2 p, float spacing, float width) {
@@ -21,11 +25,15 @@ float grid(vec2 p, float spacing, float width) {
 
 void fragment() {
 	vec2 p = world_pos.xz;
-	// Large checker patches break up the flat colour.
-	float checker = mod(floor(p.x / 40.0) + floor(p.y / 40.0), 2.0);
-	vec3 col = mix(grass_a, grass_b, checker);
+	vec3 col;
+	if (use_vertex_color) {
+		col = vcol;
+	} else {
+		float checker = mod(floor(p.x / 40.0) + floor(p.y / 40.0), 2.0);
+		col = mix(grass_a, grass_b, checker);
+	}
 	float fade = clamp(1.0 - length(p) / 900.0, 0.0, 1.0);
-	col = mix(col, line_color, grid(p, 10.0, 0.5) * 0.6 * fade);
+	col = mix(col, col * 1.25, grid(p, 10.0, 0.5) * 0.5 * fade);
 	ALBEDO = col;
 	ROUGHNESS = 0.95;
 }

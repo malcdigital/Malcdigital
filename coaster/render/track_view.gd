@@ -4,12 +4,12 @@ extends Node3D
 ## platform. Rebuilt whenever the analysis of the track changes.
 
 const LOD_SWITCH_DISTANCE := 110.0
-const SUPPORT_EVERY_M := 8.0
 
 var steel_material: StandardMaterial3D
 var spine_material: StandardMaterial3D
 var support_material: StandardMaterial3D
 var platform_material: StandardMaterial3D
+var tunnel_material: StandardMaterial3D
 
 var _chunk_root: Node3D
 var _supports: MultiMeshInstance3D
@@ -18,8 +18,8 @@ var _platforms: Node3D
 
 func _ready() -> void:
 	steel_material = StandardMaterial3D.new()
-	steel_material.albedo_color = Color(0.72, 0.74, 0.78)
-	steel_material.metallic = 0.6
+	steel_material.vertex_color_use_as_albedo = true
+	steel_material.metallic = 0.5
 	steel_material.roughness = 0.35
 	spine_material = StandardMaterial3D.new()
 	spine_material.vertex_color_use_as_albedo = true
@@ -27,6 +27,9 @@ func _ready() -> void:
 	support_material = StandardMaterial3D.new()
 	support_material.albedo_color = Color(0.55, 0.58, 0.62)
 	support_material.roughness = 0.6
+	tunnel_material = StandardMaterial3D.new()
+	tunnel_material.vertex_color_use_as_albedo = true
+	tunnel_material.roughness = 0.95
 	platform_material = StandardMaterial3D.new()
 	platform_material.albedo_color = Color(0.45, 0.42, 0.38)
 	_chunk_root = Node3D.new()
@@ -39,13 +42,13 @@ func _ready() -> void:
 
 ## `chunks` comes from TrackMeshBuilder.build_arrays (possibly built on a
 ## worker thread).
-func show_track(spline: TrackSpline, chunks: Array) -> void:
+func show_track(spline: TrackSpline, chunks: Array, site: SiteAnalysis = null, ty: Dictionary = {}) -> void:
 	for c in _chunk_root.get_children():
 		c.queue_free()
 	for lods in chunks:
 		for li in lods.size():
 			var mi := MeshInstance3D.new()
-			mi.mesh = TrackMeshBuilder.to_mesh(lods[li], steel_material, spine_material)
+			mi.mesh = TrackMeshBuilder.to_mesh(lods[li], steel_material, spine_material, tunnel_material)
 			# LOD switch by camera distance. A small overlap avoids gaps.
 			if li == 0:
 				mi.visibility_range_end = LOD_SWITCH_DISTANCE
@@ -55,30 +58,34 @@ func show_track(spline: TrackSpline, chunks: Array) -> void:
 				mi.visibility_range_begin_margin = 5.0
 				mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 			_chunk_root.add_child(mi)
-	_build_supports(spline)
+	if not ty.is_empty():
+		support_material.albedo_color = ty["support"]
+	_build_supports(site)
 	_build_platforms(spline)
 
 
-func _build_supports(sp: TrackSpline) -> void:
+## Supports come from SiteAnalysis as beams (a -> b, radius r); each is one
+## instance of a unit cylinder, stretched and rotated to fit.
+func _build_supports(site: SiteAnalysis) -> void:
 	var xforms: Array[Transform3D] = []
-	if sp != null and sp.count > 0:
-		var every := maxi(1, roundi(SUPPORT_EVERY_M / sp.ds))
-		for k in range(0, sp.count, every):
-			var u := sp.ups[k]
-			# Only support track that is roughly upright; steep and inverted
-			# parts (loops) hang from their neighbours.
-			if u.y < 0.55:
+	if site != null:
+		for bm in site.beams:
+			var a: Vector3 = bm["a"]
+			var b: Vector3 = bm["b"]
+			var r: float = bm["r"]
+			var axis := b - a
+			var len := axis.length()
+			if len < 0.05:
 				continue
-			var bottom := sp.positions[k] - u * (TrackMeshBuilder.HEART_TO_RAIL + TrackMeshBuilder.SPINE_DROP + 0.2)
-			if bottom.y < 0.6:
-				continue
-			var b := Basis().scaled(Vector3(1.0, bottom.y, 1.0))
-			xforms.append(Transform3D(b, Vector3(bottom.x, bottom.y * 0.5, bottom.z)))
+			var y := axis / len
+			var x := y.cross(Vector3.FORWARD if absf(y.z) < 0.9 else Vector3.RIGHT).normalized()
+			var z := x.cross(y)
+			xforms.append(Transform3D(Basis(x * r, y * len, z * r), (a + b) * 0.5))
 	var mm := MultiMesh.new()
 	mm.transform_format = MultiMesh.TRANSFORM_3D
 	var cyl := CylinderMesh.new()
-	cyl.top_radius = 0.28
-	cyl.bottom_radius = 0.36
+	cyl.top_radius = 1.0
+	cyl.bottom_radius = 1.0
 	cyl.height = 1.0
 	cyl.radial_segments = 8
 	cyl.rings = 1

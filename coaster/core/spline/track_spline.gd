@@ -49,6 +49,10 @@ var sample_t := PackedFloat32Array()
 ## Arc length at which each control point sits.
 var point_s := PackedFloat32Array()
 var inversions := 0
+## How deep the car bottom dips into water at each sample (set by SiteAnalysis).
+var water_depth := PackedFloat32Array()
+## Roll rate of the banked frame about the tangent (radians per metre).
+var twists := PackedFloat32Array()
 
 
 # -----------------------------------------------------------------------------
@@ -227,13 +231,21 @@ func apply_banking(data: TrackData, speeds: PackedFloat32Array) -> void:
 		var st := smoothstep(0.0, 1.0, sample_t[k])
 		var manual := deg_to_rad(lerpf(a.bank_deg, b.bank_deg, st))
 		var w := lerpf(1.0 if a.auto_bank else 0.0, 1.0 if b.auto_bank else 0.0, st)
-		var roll := lerpf(manual, auto_roll[k], w)
+		# Blend towards auto-bank by the shortest way round, so a track that
+		# ends a manual 360° roll does not unwind it again.
+		var roll := manual + w * angle_difference(manual, auto_roll[k])
 		rolls[k] = roll
 		var u0 := base_ups[k]
 		var r0 := tangents[k].cross(u0)
 		var up := (u0 * cos(roll) + r0 * sin(roll)).normalized()
 		ups[k] = up
 		rights[k] = tangents[k].cross(up).normalized()
+	# Twist: d(right)/ds = (tau*T + T x K) x right, whose component along up
+	# is -tau. So tau = -(d right / ds) . up.
+	twists.resize(count)
+	for k in count:
+		var dr := (rights[(k + 1) % count] - rights[(k - 1 + count) % count]) / (2.0 * ds)
+		twists[k] = -dr.dot(ups[k])
 	_count_inversions()
 
 
@@ -312,6 +324,45 @@ func g_forces_at(s: float, v: float, a_t: float) -> Vector3:
 	var f := curvature_at(s) * (v * v) + t * a_t + Vector3(0.0, G, 0.0)
 	var up := up_at(s)
 	var right := t.cross(up)
+	return Vector3(f.dot(up) / G, -f.dot(right) / G, f.dot(t) / G)
+
+
+func water_depth_at(s: float) -> float:
+	if water_depth.size() != count:
+		return 0.0
+	return water_depth[int(fposmod(s, length) / ds + 0.5) % count]
+
+
+## Darboux vector: the frame's rotation per metre of track. Its parts are
+## roll (twist about T) and the turning of the tangent itself (T x K).
+func darboux_at(s: float) -> Vector3:
+	var x := fposmod(s, length) / ds
+	var i := int(x) % count
+	var tw := lerpf(twists[i], twists[(i + 1) % count], x - floorf(x)) if twists.size() == count else 0.0
+	var t := tangent_at(s)
+	return t * tw + t.cross(curvature_at(s))
+
+
+## G-forces felt by a rider sitting `offset` metres to the right of the
+## heartline (wing seats). On top of the heartline force, an off-centre rider
+## is swung around by the frame's rotation:
+##   angular velocity  w = v * D          (D = Darboux vector)
+##   angular accel     a = a_t * D + v² * dD/ds
+##   extra accel       w x (w x r) + a x r,   r = offset * right
+## Returns Vector3(vertical, lateral, longitudinal) in g.
+func g_forces_offset(s: float, v: float, a_t: float, offset: float) -> Vector3:
+	if offset == 0.0:
+		return g_forces_at(s, v, a_t)
+	var t := tangent_at(s)
+	var up := up_at(s)
+	var right := t.cross(up)
+	var d := darboux_at(s)
+	var dd := (darboux_at(s + ds) - darboux_at(s - ds)) / (2.0 * ds)
+	var w := d * v
+	var alpha := d * a_t + dd * (v * v)
+	var r := right * offset
+	var extra := w.cross(w.cross(r)) + alpha.cross(r)
+	var f := curvature_at(s) * (v * v) + t * a_t + Vector3(0.0, G, 0.0) + extra
 	return Vector3(f.dot(up) / G, -f.dot(right) / G, f.dot(t) / G)
 
 

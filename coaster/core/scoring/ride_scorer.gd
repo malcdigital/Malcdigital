@@ -19,8 +19,15 @@ const HIGH_G := 3.5
 const MIN_PROBLEM_LENGTH := 1.0   # metres; ignore single-sample blips
 
 
-static func score(record: RideRecord, spline: TrackSpline) -> RideRatings:
+## `data` and `site` are optional: without them the score covers only the
+## ride itself (no coaster-type effects, near misses, tunnels or collisions).
+static func score(record: RideRecord, spline: TrackSpline, data: TrackData = null, site: SiteAnalysis = null) -> RideRatings:
 	var r := RideRatings.new()
+	var ty := data.type_info() if data != null else CoasterTypes.get_type(CoasterTypes.Id.STEEL)
+	var rattle: float = ty["rattle"]
+	var near := site.near_misses.size() if site != null else 0
+	var tunnel_entries := site.tunnel_entries if site != null else 0
+	var tunnel_len := site.tunnel_length if site != null else 0.0
 	var dt := record.interval
 	var n := record.size
 
@@ -84,7 +91,12 @@ static func score(record: RideRecord, spline: TrackSpline) -> RideRatings:
 		"avg_jerk": avg_jerk,
 		"completed": record.completed,
 		"rollbacks": record.rollbacks,
+		"near_misses": near,
+		"splashes": record.splashes,
+		"tunnel_length": tunnel_len,
+		"type": ty["name"],
 	}
+	var avg_speed: float = r.stats["avg_speed"]
 
 	# --- Intensity -----------------------------------------------------------
 	_part(r.intensity_parts, "Peak positive G", 2.2 * clampf((max_vg - 1.5) / 3.5, 0.0, 1.3))
@@ -93,6 +105,9 @@ static func score(record: RideRecord, spline: TrackSpline) -> RideRatings:
 	_part(r.intensity_parts, "Lateral G", 2.0 * clampf((max_lg - 0.3) / 1.4, 0.0, 1.3))
 	_part(r.intensity_parts, "Inversions", minf(2.0, 0.45 * inversions))
 	_part(r.intensity_parts, "Top speed", 1.6 * clampf(max_speed / 40.0, 0.0, 1.3))
+	# A wooden coaster's rattle shakes riders about more the faster it goes.
+	_part(r.intensity_parts, "Wooden rattle", 2.0 * rattle * clampf(avg_speed / 18.0, 0.0, 1.3))
+	_part(r.intensity_parts, "Water splash", minf(1.0, 0.5 * record.splashes))
 	r.intensity = _total(r.intensity_parts)
 
 	# --- Thrill --------------------------------------------------------------
@@ -102,6 +117,12 @@ static func score(record: RideRecord, spline: TrackSpline) -> RideRatings:
 	_part(r.thrill_parts, "Inversions", minf(2.0, 0.6 * inversions))
 	_part(r.thrill_parts, "Positive G", 1.0 * clampf((max_vg - 1.5) / 2.0, 0.0, 1.0))
 	_part(r.thrill_parts, "Ride length", 1.2 * clampf(duration / 70.0, 0.0, 1.0))
+	# Wing seats make every close pass feel closer.
+	var near_w := 0.3 * (1.3 if float(ty["seat_offset"]) > 0.0 else 1.0)
+	_part(r.thrill_parts, "Near misses", minf(1.8, near_w * near))
+	_part(r.thrill_parts, "Splashdowns", minf(1.4, 0.7 * record.splashes))
+	_part(r.thrill_parts, "Tunnels", minf(0.75, 0.25 * tunnel_entries))
+	_part(r.thrill_parts, "Wooden character", 0.8 * rattle * clampf(r.stats["airtime"] / 3.0, 0.0, 1.0))
 	if r.intensity > 7.5:
 		_part(r.thrill_parts, "Too intense", -1.2 * (r.intensity - 7.5))
 	if not record.completed:
@@ -117,9 +138,12 @@ static func score(record: RideRecord, spline: TrackSpline) -> RideRatings:
 	_part(r.nausea_parts, "Ride length", minf(1.0, duration / 150.0))
 	if record.rollbacks > 0:
 		_part(r.nausea_parts, "Rolling backwards", minf(2.0, 0.7 * record.rollbacks))
+	_part(r.nausea_parts, "Wooden rattle", 1.5 * rattle * clampf(duration / 90.0, 0.0, 1.0))
 	r.nausea = _total(r.nausea_parts)
 
-	r.problems = find_problems(record, spline)
+	r.problems = find_problems(record, spline, float(ty["g_scale"]))
+	_site_problems(r.problems, spline, data, site)
+	r.problems.sort_custom(func(a, b): return a["severity"] > b["severity"] or (a["severity"] == b["severity"] and a["s"] < b["s"]))
 	r.verdict = _verdict(r)
 	return r
 
@@ -139,7 +163,29 @@ static func _total(parts: Array[Dictionary]) -> float:
 ## Scans the per-sample overlay data for stretches that are intense/dangerous,
 ## too slow, or where the train stalled. Contiguous samples are merged into one
 ## problem with its worst value.
-static func find_problems(record: RideRecord, spline: TrackSpline) -> Array[Dictionary]:
+static func _site_problems(out: Array[Dictionary], spline: TrackSpline, data: TrackData, site: SiteAnalysis) -> void:
+	var D := GLimits.Zone.DANGER
+	if data != null and not bool(data.type_info()["inversions"]) and spline.inversions > 0:
+		# Find the first upside-down sample to point at.
+		for k in spline.count:
+			if spline.ups[k].y < -0.3:
+				out.append({"s": k * spline.ds, "s_start": k * spline.ds, "s_end": k * spline.ds, "kind": "type",
+					"severity": D, "value": 0.0, "message": "%s track can't go upside down. Remove this inversion." % data.type_info()["name"]})
+				break
+	if site == null:
+		return
+	for c in site.collisions:
+		out.append({"s": c["s"], "s_start": c["s"], "s_end": c["s"], "kind": "collision", "severity": D, "value": c["clearance"],
+			"message": "Riders' heads would hit %s here. Move the track or what's in the way." % SiteAnalysis.HIT_NAMES[c["kind"]]})
+	for w in site.submerged:
+		out.append({"s": w["s"], "s_start": w["s"], "s_end": w["s"], "kind": "water", "severity": D, "value": w["clearance"],
+			"message": "The train goes under water here (%.1f m deep). Raise it so only the bottom of the car dips in." % w["clearance"]})
+	for z in site.zone_violations:
+		out.append({"s": z["s"], "s_start": z["s"], "s_end": z["s"], "kind": "zone", "severity": D, "value": 0.0,
+			"message": "The marked area must stay clear: keep supports out of it and track at least 4 m above it."})
+
+
+static func find_problems(record: RideRecord, spline: TrackSpline, g_scale: float = 1.0) -> Array[Dictionary]:
 	var out: Array[Dictionary] = []
 	if spline.count == 0:
 		return out
@@ -149,13 +195,13 @@ static func find_problems(record: RideRecord, spline: TrackSpline) -> Array[Dict
 			msg = "The train rolls back here before recovering. Lower this hill or add speed before it."
 		out.append({"s": record.stall_s, "s_start": record.stall_s, "s_end": record.stall_s,
 			"kind": "stall", "severity": GLimits.Zone.DANGER, "value": 0.0, "message": msg})
-	_scan(out, record, spline, "vertical")
-	_scan(out, record, spline, "lateral")
+	_scan(out, record, spline, "vertical", g_scale)
+	_scan(out, record, spline, "lateral", g_scale)
 	out.sort_custom(func(a, b): return a["severity"] > b["severity"] or (a["severity"] == b["severity"] and a["s"] < b["s"]))
 	return out
 
 
-static func _scan(out: Array[Dictionary], record: RideRecord, spline: TrackSpline, axis: String) -> void:
+static func _scan(out: Array[Dictionary], record: RideRecord, spline: TrackSpline, axis: String, g_scale: float) -> void:
 	var n := spline.count
 	var run_start := -1
 	var worst := 0.0
@@ -166,7 +212,7 @@ static func _scan(out: Array[Dictionary], record: RideRecord, spline: TrackSplin
 		var g := 0.0
 		if k < n and record.sample_visited[k] == 1:
 			g = record.sample_g_vert[k] if axis == "vertical" else record.sample_g_lat[k]
-			zone = GLimits.vertical_zone(g) if axis == "vertical" else GLimits.lateral_zone(g)
+			zone = GLimits.vertical_zone(g, g_scale) if axis == "vertical" else GLimits.lateral_zone(g, g_scale)
 		if zone > 0:
 			if run_start < 0:
 				run_start = k

@@ -6,6 +6,10 @@ extends RefCounted
 var spline: TrackSpline
 var record: RideRecord
 var ratings: RideRatings
+var site: SiteAnalysis
+var cost := 0.0
+var cost_parts: Array[Dictionary] = []
+var max_height_above_ground := 0.0
 var valid := false
 
 

@@ -29,6 +29,11 @@ const PREVIEW_DT := 1.0 / 60.0
 const DRIVE_ACCEL := 2.5
 ## Give up if the train has not made forward progress for this long.
 const STALL_TIMEOUT := 12.0
+## Water drag on a car dipping into a lake: k_w * v² per metre of depth
+## (capped at 0.6 m, about where a splash trough's sides stop it going deeper).
+const WATER_DRAG := 0.03
+## A splash counts when the train hits the water faster than this.
+const SPLASH_SPEED := 6.0
 const MAX_RIDE_TIME := 600.0
 
 var spline: TrackSpline
@@ -48,6 +53,10 @@ var completed := false
 var stalled := false
 var stall_s := -1.0
 var rollbacks := 0
+var splashes := 0
+var _front_wet := false
+## Seat offset from the heartline for G capture (wing seats), from the type.
+var seat_offset := 0.0
 
 var dt := RIDE_DT
 var record: RideRecord
@@ -74,6 +83,9 @@ func setup(p_spline: TrackSpline, p_data: TrackData, capture: bool = true, p_dt:
 	stalled = false
 	stall_s = -1.0
 	rollbacks = 0
+	splashes = 0
+	_front_wet = false
+	seat_offset = float(data.type_info()["seat_offset"])
 	_since_progress = 0.0
 	_was_moving_forward = true
 	_tick = 0
@@ -107,6 +119,8 @@ func step() -> void:
 	var on_launch := 0.0
 	var on_brake := 0.0
 	var on_station := 0.0
+	var water := 0.0
+	var has_water := spline.water_depth.size() == spline.count
 	var gy := Vector3(0.0, G, 0.0)
 	for i in n:
 		var cs := s - float(i) * data.car_spacing
@@ -121,6 +135,8 @@ func step() -> void:
 		# friction wheels, so we use the full perpendicular magnitude).
 		var f := spline.curvature_at(cs) * (v * v) + gy
 		normal += (f - t * f.dot(t)).length()
+		if has_water:
+			water += minf(spline.water_depth_at(cs) / 0.6, 1.0)
 		match spline.segment_at(cs):
 			TrackPoint.Segment.LIFT: on_lift += inv_n
 			TrackPoint.Segment.LAUNCH: on_launch += inv_n
@@ -139,7 +155,7 @@ func step() -> void:
 	# tyres) so a train that has been braked can always crawl home.
 
 	# Resistances always oppose motion: friction  mu·|N|,  drag  k·v².
-	var resist := data.friction * normal + data.drag * v * v
+	var resist := data.friction * normal + (data.drag + WATER_DRAG * water * inv_n) * v * v
 	var drive := gravity + system
 	var v_new: float
 	if absf(v) < 1e-3 and absf(drive) <= resist:
@@ -196,6 +212,15 @@ func step() -> void:
 		if stall_s < 0.0:
 			stall_s = fposmod(best_s, spline.length)
 
+	# Splashdown: the front car hitting the water at speed.
+	if has_water:
+		var wet := spline.water_depth_at(s) > 0.0
+		if wet and not _front_wet and absf(v) > SPLASH_SPEED:
+			splashes += 1
+			if record != null and record.splash_s.size() < 32:
+				record.splash_s.append(fposmod(s, spline.length))
+		_front_wet = wet
+
 	if record != null:
 		_capture()
 
@@ -203,6 +228,11 @@ func step() -> void:
 func _capture() -> void:
 	var ms := middle_s()
 	var g := spline.g_forces_at(ms, v, a_t)
+	if seat_offset > 0.0:
+		# Wing seats: record whichever side is feeling it more.
+		var gl := spline.g_forces_offset(ms, v, a_t, seat_offset)
+		var gr := spline.g_forces_offset(ms, v, a_t, -seat_offset)
+		g = gl if absf(gl.x - 1.0) + absf(gl.y) > absf(gr.x - 1.0) + absf(gr.y) else gr
 	var k := spline.index_at(ms)
 	# At speed the middle car can skip a sample or two per tick; fill those so
 	# the editor overlay has no holes.
@@ -251,6 +281,7 @@ func finalize() -> void:
 	record.stalled = stalled
 	record.stall_s = stall_s
 	record.rollbacks = rollbacks
+	record.splashes = splashes
 	record.duration = time
 
 

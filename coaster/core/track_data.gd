@@ -3,10 +3,16 @@ extends RefCounted
 ## Serializable description of a whole coaster: the control points the player
 ## edits plus train and ride-system settings. Everything that is saved lives here.
 
-const FORMAT_VERSION := 1
+const FORMAT_VERSION := 2
 
 var name := "Untitled coaster"
 var points: Array[TrackPoint] = []
+var coaster_type: int = CoasterTypes.Id.STEEL
+var terrain := TerrainData.new()
+## Scenery: [{"k": Props.Kind, "x": float, "z": float, "s": scale}]
+var props: Array[Dictionary] = []
+## Contract this coaster is being built for ("" = sandbox).
+var contract_id := ""
 
 # --- Train -------------------------------------------------------------------
 var num_cars := 5
@@ -28,8 +34,44 @@ var friction := 0.012
 var drag := 0.0003
 
 
+## Deep copy without a JSON round trip (cheap enough to do on every edit).
 func copy() -> TrackData:
-	return TrackData.from_dict(to_dict())
+	var t := TrackData.new()
+	t.name = name
+	for p in points:
+		t.points.append(p.copy())
+	t.coaster_type = coaster_type
+	t.terrain = terrain.copy()
+	for pr in props:
+		t.props.append(pr.duplicate())
+	t.contract_id = contract_id
+	t.num_cars = num_cars
+	t.car_spacing = car_spacing
+	t.lift_speed = lift_speed
+	t.launch_speed = launch_speed
+	t.launch_accel = launch_accel
+	t.brake_speed = brake_speed
+	t.brake_decel = brake_decel
+	t.station_speed = station_speed
+	t.friction = friction
+	t.drag = drag
+	return t
+
+
+## Switch coaster type: physics constants come from the type.
+func set_type(id: int) -> void:
+	coaster_type = id
+	var ty := CoasterTypes.get_type(id)
+	friction = ty["friction"]
+	drag = ty["drag"]
+	if not ty["launch"]:
+		for p in points:
+			if p.segment == TrackPoint.Segment.LAUNCH:
+				p.segment = TrackPoint.Segment.LIFT
+
+
+func type_info() -> Dictionary:
+	return CoasterTypes.get_type(coaster_type)
 
 
 func to_dict() -> Dictionary:
@@ -46,6 +88,10 @@ func to_dict() -> Dictionary:
 			"brake_speed": brake_speed, "brake_decel": brake_decel, "station_speed": station_speed,
 		},
 		"resistance": {"friction": friction, "drag": drag},
+		"type": coaster_type,
+		"terrain": terrain.to_dict(),
+		"props": props,
+		"contract": contract_id,
 	}
 
 
@@ -68,6 +114,13 @@ static func from_dict(d: Dictionary) -> TrackData:
 	var res: Dictionary = d.get("resistance", {})
 	t.friction = float(res.get("friction", t.friction))
 	t.drag = float(res.get("drag", t.drag))
+	t.coaster_type = clampi(int(d.get("type", CoasterTypes.Id.STEEL)), 0, CoasterTypes.Id.FLYING)
+	if d.has("terrain") and d["terrain"] is Dictionary:
+		t.terrain = TerrainData.from_dict(d["terrain"])
+	for pr in d.get("props", []):
+		if pr is Dictionary:
+			t.props.append({"k": int(pr.get("k", 0)), "x": float(pr.get("x", 0)), "z": float(pr.get("z", 0)), "s": float(pr.get("s", 1))})
+	t.contract_id = str(d.get("contract", ""))
 	return t
 
 
