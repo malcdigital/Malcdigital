@@ -11,10 +11,19 @@ signal selection_changed(index: int)
 signal points_moved(live: bool)
 ## Emitted once, just before a drag first moves a point, so Main can snapshot for undo.
 signal edit_started
+## Terrain / scenery tools: a press, drag and release on the ground.
+signal ground_stroke(phase: int, point: Vector3)
+## Scenery tool: a tap on the ground.
+signal ground_tap(point: Vector3)
+
+enum Tool { TRACK, TERRAIN, SCENERY }
+enum Stroke { BEGIN, MOVE, END }
 
 const PICK_RADIUS_PX := 34.0
 const DRAG_THRESHOLD_PX := 6.0
 const MAX_HEIGHT := 150.0
+## Points may go below ground level: into tunnels or down to a lake.
+const MIN_Y := -25.0
 
 var data: TrackData
 var camera: OrbitCamera
@@ -23,6 +32,10 @@ var height_mode := false     # toggled from the UI; Shift does the same on deskt
 var snap := true
 var snap_step := 0.5
 var enabled := true
+var tool: int = Tool.TRACK
+var brush_radius := 14.0
+var _brush_ring: MeshInstance3D
+var _stroking := false
 
 var _handles: Array[MeshInstance3D] = []
 var _stems: Array[MeshInstance3D] = []
@@ -62,6 +75,17 @@ func _ready() -> void:
 	_selected_mat = _flat(Color(1.0, 0.85, 0.1), 1.0)
 	_markers = Node3D.new()
 	add_child(_markers)
+	_brush_ring = MeshInstance3D.new()
+	var torus := TorusMesh.new()
+	torus.inner_radius = 0.94
+	torus.outer_radius = 1.0
+	torus.rings = 48
+	torus.ring_segments = 4
+	_brush_ring.mesh = torus
+	_brush_ring.material_override = _flat(Color(1.0, 0.9, 0.3), 0.9)
+	_brush_ring.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_brush_ring.visible = false
+	add_child(_brush_ring)
 
 
 static func _flat(c: Color, alpha: float) -> StandardMaterial3D:
@@ -90,8 +114,10 @@ func rebuild_handles() -> void:
 	_stems.clear()
 	if data == null:
 		return
+	var show := tool == Tool.TRACK
 	for i in data.points.size():
 		var h := MeshInstance3D.new()
+		h.visible = show
 		h.mesh = _sphere
 		h.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 		add_child(h)
@@ -117,7 +143,8 @@ func refresh_handles() -> void:
 		var s := clampf(d / 85.0, 0.5, 6.0) * (1.5 if sel else (0.35 if p.minor else 1.0))
 		h.scale = Vector3.ONE * s
 		var st := _stems[i]
-		st.visible = sel or p.position.y > 2.0
+		h.visible = tool == Tool.TRACK
+		st.visible = tool == Tool.TRACK and (sel or p.position.y > 2.0)
 		st.position = Vector3(p.position.x, p.position.y * 0.5, p.position.z)
 		st.scale = Vector3(s, maxf(p.position.y, 0.01), s)
 		st.material_override = h.material_override
@@ -175,8 +202,14 @@ func _unhandled_input(event: InputEvent) -> void:
 		# A second finger turns the gesture into pinch/pan: abandon any drag.
 		if _dragging_point and _drag_started:
 			points_moved.emit(false)
+		if _stroking:
+			_stroking = false
+			ground_stroke.emit(Stroke.END, _brush_ring.position)
 		_pressing = false
 		_dragging_point = false
+		return
+	if tool != Tool.TRACK:
+		_ground_input(event)
 		return
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
 		if event.pressed:
@@ -198,7 +231,7 @@ func _unhandled_input(event: InputEvent) -> void:
 		elif _pressing:
 			if _dragging_point and _drag_started:
 				points_moved.emit(false)
-			elif not _drag_started and _pick(event.position) < 0 and selected >= 0:
+			elif not _drag_started and event.position.distance_to(_press_pos) < DRAG_THRESHOLD_PX and _pick(event.position) < 0 and selected >= 0:
 				select(-1)   # tap on empty space deselects
 			_pressing = false
 			_dragging_point = false
@@ -216,6 +249,77 @@ func _unhandled_input(event: InputEvent) -> void:
 		if _dragging_point and selected >= 0:
 			_drag_point(event.position)
 		get_viewport().set_input_as_handled()
+
+
+func set_tool(t: int) -> void:
+	tool = t
+	_brush_ring.visible = false
+	if t != Tool.TRACK and selected >= 0:
+		select(-1)
+	refresh_handles()
+
+
+func _ground_hit(screen: Vector2) -> Variant:
+	return data.terrain.raycast(camera.project_ray_origin(screen), camera.project_ray_normal(screen))
+
+
+func _show_ring(p: Vector3) -> void:
+	_brush_ring.visible = tool == Tool.TERRAIN
+	_brush_ring.position = p + Vector3.UP * 0.3
+	_brush_ring.scale = Vector3(brush_radius, 1.0, brush_radius)
+
+
+## Terrain and scenery tools. Terrain: press-and-drag sculpts (Alt + drag
+## orbits on desktop; two fingers pan/zoom on touch). Scenery: tap places or
+## removes; drag orbits.
+func _ground_input(event: InputEvent) -> void:
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
+		if event.pressed:
+			_pressing = true
+			_press_pos = event.position
+			_drag_started = false
+			var hit = _ground_hit(event.position)
+			if tool == Tool.TERRAIN and hit != null and not Input.is_key_pressed(KEY_ALT):
+				_stroking = true
+				_show_ring(hit)
+				edit_started.emit()
+				ground_stroke.emit(Stroke.BEGIN, hit)
+			else:
+				camera.begin_drag(MOUSE_BUTTON_LEFT)
+		elif _pressing:
+			if _stroking:
+				ground_stroke.emit(Stroke.END, _brush_ring.position)
+			elif tool == Tool.SCENERY and event.position.distance_to(_press_pos) < DRAG_THRESHOLD_PX:
+				var hit = _ground_hit(event.position)
+				if hit != null:
+					ground_tap.emit(hit)
+			_stroking = false
+			_pressing = false
+			camera.end_drag()
+		get_viewport().set_input_as_handled()
+	elif event is InputEventMouseMotion:
+		if tool == Tool.TERRAIN and not _pressing:
+			var hit = _ground_hit(event.position)
+			if hit != null:
+				_show_ring(hit)
+		if not _pressing:
+			return
+		if not _drag_started and event.position.distance_to(_press_pos) >= DRAG_THRESHOLD_PX:
+			_drag_started = true
+		if _stroking:
+			var hit = _ground_hit(event.position)
+			if hit != null:
+				_show_ring(hit)
+				ground_stroke.emit(Stroke.MOVE, hit)
+		get_viewport().set_input_as_handled()
+
+
+func brush_point() -> Vector3:
+	return _brush_ring.position
+
+
+func is_stroking() -> bool:
+	return _stroking
 
 
 func _pick(screen: Vector2) -> int:
@@ -271,7 +375,7 @@ func _drag_point(screen: Vector2) -> void:
 		np.z = h.z
 	if snap:
 		np = np.snapped(Vector3.ONE * snap_step)
-	np.y = clampf(np.y, Elements.MIN_HEIGHT, MAX_HEIGHT)
+	np.y = clampf(np.y, MIN_Y, MAX_HEIGHT)
 	if np != p.position:
 		p.position = np
 		refresh_handles()
@@ -285,6 +389,6 @@ func nudge(delta: Vector3) -> void:
 	edit_started.emit()
 	var p := data.points[selected]
 	p.position = (p.position + delta)
-	p.position.y = clampf(p.position.y, Elements.MIN_HEIGHT, MAX_HEIGHT)
+	p.position.y = clampf(p.position.y, MIN_Y, MAX_HEIGHT)
 	refresh_handles()
 	points_moved.emit(false)

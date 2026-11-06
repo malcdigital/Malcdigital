@@ -27,6 +27,19 @@ var overlay_option: OptionButton
 var graph: TrackGraph
 var graph_toggle: Button
 var busy_label: Label
+var type_option: OptionButton
+var launch_label: Label
+var launch_slider: HSlider
+var _tool_buttons: Array[Button] = []
+var _tool_groups := {}         # TrackEditor.Tool -> Array[Control]
+var _stats_compact := false
+var _last_analysis: TrackAnalyzer
+var contracts_panel: PanelContainer
+var contracts_list: ItemList
+var contract_info: Label
+var contract_start: Button
+var brief_panel: PanelContainer
+var brief_label: Label
 
 # Ride widgets
 var ride_ui: Control
@@ -62,6 +75,7 @@ func setup(p_main: Node) -> void:
 	_build_ride_ui()
 	_build_results()
 	_build_dialogs()
+	_build_contract_dialogs()
 	toast_label = Label.new()
 	toast_label.set_anchors_preset(Control.PRESET_CENTER_TOP)
 	toast_label.position = Vector2(-300, 80)
@@ -220,13 +234,21 @@ func _build_editor_ui() -> void:
 	file_menu.flat = false
 	var fp := file_menu.get_popup()
 	fp.add_theme_font_size_override("font_size", 22)
+	fp.add_item("Contracts...", 4)
+	fp.add_separator()
 	fp.add_item("Save...", 0)
 	fp.add_item("Load...", 1)
 	fp.add_separator()
 	fp.add_item("New: starter coaster", 2)
-	fp.add_item("New: blank oval", 3)
+	fp.add_item("New: blank track", 3)
+	fp.add_separator()
+	for i in TerrainData.PRESET_NAMES.size():
+		fp.add_item("Terrain: " + TerrainData.PRESET_NAMES[i], 10 + i)
+	fp.add_separator()
+	fp.add_item("Leave contract (sandbox)", 5)
 	fp.id_pressed.connect(_on_file_menu)
 	top.add_child(file_menu)
+	top.add_child(_button("Contracts", func() -> void: show_contracts()))
 	overlay_option = OptionButton.new()
 	overlay_option.custom_minimum_size = Vector2(52, 52)
 	overlay_option.focus_mode = Control.FOCUS_NONE
@@ -235,6 +257,15 @@ func _build_editor_ui() -> void:
 	overlay_option.get_popup().add_theme_font_size_override("font_size", 22)
 	overlay_option.item_selected.connect(func(i: int) -> void: main.set_overlay(i))
 	top.add_child(overlay_option)
+	type_option = OptionButton.new()
+	type_option.custom_minimum_size = Vector2(52, 52)
+	type_option.focus_mode = Control.FOCUS_NONE
+	type_option.get_popup().add_theme_font_size_override("font_size", 22)
+	for id in CoasterTypes.ORDER:
+		type_option.add_item(CoasterTypes.type_name(id), id)
+	type_option.item_selected.connect(func(i: int) -> void:
+		if not _updating: main.set_coaster_type(type_option.get_item_id(i)))
+	top.add_child(type_option)
 	graph_toggle = _button("Graph", func(on: bool) -> void: graph.visible = on, true)
 	graph_toggle.set_pressed_no_signal(not compact)
 	top.add_child(graph_toggle)
@@ -257,7 +288,12 @@ func _build_editor_ui() -> void:
 	top_v.add_child(row)
 	var sp := _panel(row)
 	sp.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
-	sp.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	# Tap the stats panel to fold it down to two lines (handy on phones).
+	sp.mouse_filter = Control.MOUSE_FILTER_STOP
+	sp.gui_input.connect(func(e: InputEvent) -> void:
+		if e is InputEventMouseButton and e.pressed and e.button_index == MOUSE_BUTTON_LEFT:
+			_stats_compact = not _stats_compact
+			update_analysis(_last_analysis))
 	stats_label = RichTextLabel.new()
 	stats_label.bbcode_enabled = true
 	stats_label.fit_content = true
@@ -282,26 +318,77 @@ func _build_editor_ui() -> void:
 	bottom.add_theme_constant_override("v_separation", 6)
 	bottom.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	bottom_v.add_child(bottom)
-	bottom.add_child(_button("+ Point", func() -> void: main.add_point()))
-	bottom.add_child(_button("Delete", func() -> void: main.delete_point()))
+	# Tool switch: Track / Terrain / Scenery. Each tool shows its own buttons.
+	var group := ButtonGroup.new()
+	for t in [TrackEditor.Tool.TRACK, TrackEditor.Tool.TERRAIN, TrackEditor.Tool.SCENERY]:
+		var b := _button(["Track", "Terrain", "Scenery"][t], func(on: bool) -> void:
+			if on: main.set_tool(t), true)
+		b.button_group = group
+		b.add_theme_color_override("font_color", Color(1.0, 0.85, 0.3))
+		bottom.add_child(b)
+		_tool_buttons.append(b)
+	_tool_buttons[0].set_pressed_no_signal(true)
+	var track_tools: Array[Control] = []
+	track_tools.append(_button("+ Point", func() -> void: main.add_point()))
+	track_tools.append(_button("Delete", func() -> void: main.delete_point()))
 	var el := MenuButton.new()
 	el.text = "Add element"
 	el.custom_minimum_size = Vector2(52, 52)
 	el.flat = false
 	var ep := el.get_popup()
 	ep.add_theme_font_size_override("font_size", 22)
-	for kind in [Elements.Kind.HILL, Elements.Kind.DROP, Elements.Kind.LOOP, Elements.Kind.HELIX_LEFT,
+	for kind in [Elements.Kind.HILL, Elements.Kind.DROP, Elements.Kind.LOOP, Elements.Kind.HEARTLINE_ROLL, Elements.Kind.HELIX_LEFT,
 			Elements.Kind.HELIX_RIGHT, Elements.Kind.TURN_LEFT, Elements.Kind.TURN_RIGHT, Elements.Kind.UTURN_LEFT,
-			Elements.Kind.UTURN_RIGHT, Elements.Kind.LIFT_HILL, Elements.Kind.LAUNCH, Elements.Kind.BRAKES, Elements.Kind.STRAIGHT]:
+			Elements.Kind.UTURN_RIGHT, Elements.Kind.SPLASHDOWN, Elements.Kind.LIFT_HILL, Elements.Kind.LAUNCH, Elements.Kind.BRAKES, Elements.Kind.STRAIGHT]:
 		ep.add_item(Elements.NAMES[kind], kind)
 	ep.id_pressed.connect(func(id: int) -> void: main.insert_element(id))
-	bottom.add_child(el)
-	bottom.add_child(_button("Smooth", func() -> void: main.smooth()))
+	track_tools.append(el)
+	track_tools.append(_button("Smooth", func() -> void: main.smooth()))
 	height_toggle = _button("Height mode", func(on: bool) -> void: main.set_height_mode(on), true)
-	bottom.add_child(height_toggle)
+	track_tools.append(height_toggle)
 	snap_toggle = _button("Snap", func(on: bool) -> void: main.set_snap(on), true)
 	snap_toggle.set_pressed_no_signal(true)
-	bottom.add_child(snap_toggle)
+	track_tools.append(snap_toggle)
+
+	var terrain_tools: Array[Control] = []
+	var bgroup := ButtonGroup.new()
+	for b_i in TerrainData.BRUSH_NAMES.size():
+		var bb := _button(TerrainData.BRUSH_NAMES[b_i], func(on: bool) -> void:
+			if on: main.set_brush(b_i), true)
+		bb.button_group = bgroup
+		if b_i == 0:
+			bb.set_pressed_no_signal(true)
+		terrain_tools.append(bb)
+	var size_box := HBoxContainer.new()
+	var size_label := Label.new()
+	size_label.text = "Size"
+	size_box.add_child(size_label)
+	var size_slider := HSlider.new()
+	size_slider.min_value = 6
+	size_slider.max_value = 40
+	size_slider.value = 14
+	size_slider.custom_minimum_size = Vector2(130, 52)
+	size_slider.value_changed.connect(func(v: float) -> void: main.set_brush_size(v))
+	size_box.add_child(size_slider)
+	terrain_tools.append(size_box)
+
+	var scenery_tools: Array[Control] = []
+	var pgroup := ButtonGroup.new()
+	var kinds := [[Props.Kind.TREE, "Tree"], [Props.Kind.ROCK, "Rock"], [Props.Kind.TOWER, "Tower"], [-1, "Remove"]]
+	for kd in kinds:
+		var k: int = kd[0]
+		var pb := _button(kd[1], func(on: bool) -> void:
+			if on: main.set_prop_kind(k), true)
+		pb.button_group = pgroup
+		if k == Props.Kind.TREE:
+			pb.set_pressed_no_signal(true)
+		scenery_tools.append(pb)
+
+	_tool_groups = {TrackEditor.Tool.TRACK: track_tools, TrackEditor.Tool.TERRAIN: terrain_tools, TrackEditor.Tool.SCENERY: scenery_tools}
+	for t in _tool_groups:
+		for c in _tool_groups[t]:
+			bottom.add_child(c)
+			c.visible = t == TrackEditor.Tool.TRACK
 	var spacer2 := Control.new()
 	spacer2.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	spacer2.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -344,6 +431,18 @@ func _build_editor_ui() -> void:
 		if not _updating: main.set_bank(val))
 	bank_slider.drag_ended.connect(func(_c: bool) -> void: main.commit_bank())
 	v.add_child(bank_slider)
+	launch_label = Label.new()
+	v.add_child(launch_label)
+	launch_slider = HSlider.new()
+	launch_slider.min_value = 10
+	launch_slider.max_value = 45
+	launch_slider.step = 1
+	launch_slider.custom_minimum_size = Vector2(0, 36)
+	launch_slider.value_changed.connect(func(val: float) -> void:
+		launch_label.text = "Launch speed: %d km/h" % roundi(val * 3.6)
+		if not _updating: main.set_launch_speed(val))
+	launch_slider.drag_ended.connect(func(_c: bool) -> void: main.commit_bank())
+	v.add_child(launch_slider)
 	height_label = Label.new()
 	v.add_child(height_label)
 	var hb := HBoxContainer.new()
@@ -358,14 +457,21 @@ func _on_file_menu(id: int) -> void:
 	match id:
 		0:
 			save_name.text = main.data.name
-			save_panel.visible = true
+			_open(save_panel)
 		1:
 			_refresh_load_list()
-			load_panel.visible = true
+			_open(load_panel)
 		2:
 			main.new_track(false)
 		3:
 			main.new_track(true)
+		4:
+			show_contracts()
+		5:
+			main.leave_contract()
+		_:
+			if id >= 10:
+				main.set_terrain_preset(id - 10)
 
 
 func show_editor() -> void:
@@ -393,6 +499,11 @@ func refresh_point(data: TrackData, index: int, spline: TrackSpline, record: Rid
 	point_title.text = "Point %d of %d" % [index + 1, data.points.size()]
 	segment_option.select(p.segment)
 	auto_bank_check.button_pressed = p.auto_bank
+	var launch := p.segment == TrackPoint.Segment.LAUNCH
+	launch_label.visible = launch
+	launch_slider.visible = launch
+	launch_slider.value = data.launch_speed
+	launch_label.text = "Launch speed: %d km/h" % roundi(data.launch_speed * 3.6)
 	bank_slider.editable = not p.auto_bank
 	bank_slider.value = p.bank_deg
 	bank_label.text = "Bank: %d°" % int(p.bank_deg) if not p.auto_bank else "Bank: automatic"
@@ -407,8 +518,12 @@ func refresh_point(data: TrackData, index: int, spline: TrackSpline, record: Rid
 
 
 func update_analysis(a: TrackAnalyzer) -> void:
+	_last_analysis = a
+	var d: TrackData = main.data
+	var c := Contracts.find(d.contract_id)
+	var head := "[b]%s[/b]  [color=#9ab]%s[/color]" % [d.name, CoasterTypes.type_name(d.coaster_type)]
 	if a == null or not a.valid:
-		stats_label.text = "[b]Track needs at least 4 points[/b]"
+		stats_label.text = head + "\n[b]Track needs at least 4 points[/b]"
 		graph.set_data(null, null, [] as Array[Dictionary])
 		return
 	var st := a.ratings.stats
@@ -423,17 +538,53 @@ func update_analysis(a: TrackAnalyzer) -> void:
 	for p in r.problems:
 		if p["severity"] == GLimits.Zone.DANGER: reds += 1
 		else: yellows += 1
-	var t := "[b]%s[/b]\n%s\n" % [main.data.name, status]
-	t += "Length %.0f m · Height %.0f m\n" % [st["length"], st["max_height"]]
-	t += "Top speed %.0f km/h · %.0f s\n" % [st["max_speed"] * 3.6, st["duration"]]
-	t += "G: %s / %s · lat %s\n" % [_gfmt(st["max_g_vert"], GLimits.vertical_zone(st["max_g_vert"])),
-		_gfmt(st["min_g_vert"], GLimits.vertical_zone(st["min_g_vert"])), _gfmt(st["max_g_lat"], GLimits.lateral_zone(st["max_g_lat"]))]
-	t += "Airtime %.1f s · Inversions %d\n" % [st["airtime"], st["inversions"]]
+	var budget: float = c.get("budget", 0.0)
+	var cost := CostModel.money(a.cost)
+	if budget > 0.0:
+		cost = "[color=#%s]%s[/color] of %s" % ["6f6" if a.cost <= budget else "f66", cost, CostModel.money(budget)]
+	var t := "%s\n%s · Cost %s\n" % [head, status, cost]
 	t += "Thrill [b]%.1f[/b] · Intensity [b]%.1f[/b] · Nausea [b]%.1f[/b]" % [r.thrill, r.intensity, r.nausea]
-	if reds + yellows > 0:
-		t += "\n[color=#f66]%d red[/color] · [color=#fc4]%d yellow[/color] spots" % [reds, yellows]
+	if not _stats_compact:
+		t += "\nLength %.0f m · Height %.0f m · %.0f km/h · %.0f s\n" % [st["length"], a.max_height_above_ground, st["max_speed"] * 3.6, st["duration"]]
+		t += "G: %s / %s · lat %s · Airtime %.1f s\n" % [_gfmt(st["max_g_vert"], GLimits.vertical_zone(st["max_g_vert"])),
+			_gfmt(st["min_g_vert"], GLimits.vertical_zone(st["min_g_vert"])), _gfmt(st["max_g_lat"], GLimits.lateral_zone(st["max_g_lat"])), st["airtime"]]
+		t += "Inversions %d · Near misses %d · Splashes %d · Tunnel %.0f m" % [st["inversions"], st["near_misses"], st["splashes"], st["tunnel_length"]]
+		if reds + yellows > 0:
+			t += "\n[color=#f66]%d red[/color] · [color=#fc4]%d yellow[/color] spots" % [reds, yellows]
+		var res: Dictionary = main.contract_result
+		if not res.is_empty():
+			t += "\n[b]Contract: %s[/b]  (stars now: %d)" % [c.get("title", ""), res["stars"]]
+			for g in res["goals"]:
+				var ok: bool = g["ok"]
+				t += "\n[color=#%s]%s[/color] %s%s [color=#9ab](%s)[/color]" % ["6f6" if ok else ("fc4" if g["bonus"] else "f66"),
+					"YES" if ok else "NO ", "Bonus: " if g["bonus"] else "", g["text"], g["detail"]]
+	else:
+		t += "\n[color=#9ab](tap for details)[/color]"
 	stats_label.text = t
 	graph.set_data(a.spline, a.record, r.problems)
+
+
+func refresh_type(data: TrackData, progress: ProgressStore) -> void:
+	_updating = true
+	var unlocked := progress.unlocked_types()
+	for i in type_option.item_count:
+		var id := type_option.get_item_id(i)
+		var locked := not unlocked.has(id)
+		type_option.set_item_text(i, CoasterTypes.type_name(id) + (" (locked)" if locked else ""))
+		type_option.set_item_disabled(i, locked or (data.contract_id != "" and id != data.coaster_type))
+		if id == data.coaster_type:
+			type_option.select(i)
+	_updating = false
+
+
+func show_tool(t: int) -> void:
+	for k in _tool_groups:
+		for c in _tool_groups[k]:
+			c.visible = k == t
+	for i in _tool_buttons.size():
+		_tool_buttons[i].set_pressed_no_signal(i == t)
+	if t != TrackEditor.Tool.TRACK:
+		point_panel.visible = false
 
 
 static func _gfmt(g: float, zone: int) -> String:
@@ -670,6 +821,19 @@ func _build_dialogs() -> void:
 	lv.add_child(lb)
 
 
+## Show a dialog centred on screen (and kept inside it).
+func _open(p: PanelContainer) -> void:
+	p.visible = true
+	p.reset_size()
+	_center.call_deferred(p)
+
+
+func _center(p: PanelContainer) -> void:
+	p.reset_size()
+	var area := root.size
+	p.position = Vector2(maxf((area.x - p.size.x) * 0.5, 8.0), maxf((area.y - p.size.y) * 0.5, 8.0))
+
+
 func _dialog(title: String) -> PanelContainer:
 	var p := PanelContainer.new()
 	root.add_child(p)
@@ -699,4 +863,137 @@ func _refresh_load_list() -> void:
 
 
 func any_dialog_open() -> bool:
-	return save_panel.visible or load_panel.visible
+	return save_panel.visible or load_panel.visible or contracts_panel.visible or brief_panel.visible
+
+
+# -----------------------------------------------------------------------------
+# Contracts
+# -----------------------------------------------------------------------------
+
+func _build_contract_dialogs() -> void:
+	contracts_panel = _dialog("Contracts")
+	var v: VBoxContainer = contracts_panel.get_child(0)
+	var total := Label.new()
+	total.name = "Total"
+	v.add_child(total)
+	var hb := BoxContainer.new()   # list and details side by side, stacked when narrow
+	hb.vertical = compact and get_window().size.x < get_window().size.y
+	hb.add_theme_constant_override("separation", 12)
+	v.add_child(hb)
+	contracts_list = ItemList.new()
+	contracts_list.custom_minimum_size = Vector2(280, 260)
+	contracts_list.add_theme_font_size_override("font_size", 18)
+	contracts_list.item_selected.connect(_on_contract_selected)
+	hb.add_child(contracts_list)
+	contract_info = Label.new()
+	contract_info.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	contract_info.custom_minimum_size = Vector2(320, 0)
+	contract_info.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	contract_info.add_theme_font_size_override("font_size", 16)
+	var info_scroll := ScrollContainer.new()
+	info_scroll.custom_minimum_size = Vector2(340, 260)
+	info_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	info_scroll.add_child(contract_info)
+	hb.add_child(info_scroll)
+	var bb := HBoxContainer.new()
+	bb.alignment = BoxContainer.ALIGNMENT_END
+	bb.add_child(_button("Close", func() -> void: contracts_panel.visible = false))
+	contract_start = _button("Start contract", func() -> void:
+		var sel := contracts_list.get_selected_items()
+		if sel.size() > 0:
+			contracts_panel.visible = false
+			main.start_contract(Contracts.LIST[sel[0]]["id"]))
+	bb.add_child(contract_start)
+	v.add_child(bb)
+
+	brief_panel = _dialog("Brief")
+	var bv: VBoxContainer = brief_panel.get_child(0)
+	brief_label = Label.new()
+	brief_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	brief_label.custom_minimum_size = Vector2(minf(440.0, root.size.x - 60.0) if root.size.x > 100.0 else 440.0, 0)
+	bv.add_child(brief_label)
+	var bbb := HBoxContainer.new()
+	bbb.alignment = BoxContainer.ALIGNMENT_END
+	bbb.add_child(_button("Start building", func() -> void: brief_panel.visible = false))
+	bv.add_child(bbb)
+
+
+func show_contracts() -> void:
+	var progress: ProgressStore = main.progress
+	contracts_list.clear()
+	for i in Contracts.LIST.size():
+		var c: Dictionary = Contracts.LIST[i]
+		var stars := progress.best(c["id"])
+		var label := "%d. %s" % [i + 1, c["title"]]
+		if not progress.is_available(i):
+			label += "  (locked)"
+		elif stars > 0:
+			label += "  %s" % "*".repeat(stars)
+		contracts_list.add_item(label)
+	(contracts_panel.get_child(0).get_node("Total") as Label).text = "Stars earned: %d of %d" % [progress.total_stars(), Contracts.LIST.size() * 3]
+	var pick := 0
+	for i in Contracts.LIST.size():
+		if progress.is_available(i):
+			pick = i
+	contracts_list.select(pick)
+	_on_contract_selected(pick)
+	_open(contracts_panel)
+
+
+func _on_contract_selected(i: int) -> void:
+	var progress: ProgressStore = main.progress
+	var c: Dictionary = Contracts.LIST[i]
+	contract_info.text = _brief_text(c) + ("\n\nBest: %d of 3 stars" % progress.best(c["id"]) if progress.best(c["id"]) > 0 else "")
+	contract_start.disabled = not progress.is_available(i)
+	if not progress.is_available(i):
+		contract_info.text += "\n\nFinish the previous contract to open this one."
+
+
+func _brief_text(c: Dictionary) -> String:
+	var t := "%s\n%s\n\nCoaster: %s · Site: %s · Budget: %s\nGoals:" % [c["title"], c["brief"],
+		CoasterTypes.type_name(c["type"]), TerrainData.PRESET_NAMES[c["terrain"]], CostModel.money(c["budget"])]
+	for g in c["goals"]:
+		t += "\n  %s%s" % ["Bonus: " if g.get("bonus", false) else "- ", Contracts.goal_text(g)]
+	if c.has("unlocks"):
+		t += "\nReward: unlocks the %s coaster" % CoasterTypes.type_name(c["unlocks"])
+	return t
+
+
+func show_brief(c: Dictionary) -> void:
+	brief_label.text = _brief_text(c) + "\n\nThe station and a small starter loop are in place. Build out from there; the stats panel tracks every goal live."
+	_open(brief_panel)
+
+
+func show_contract_result(c: Dictionary, res: Dictionary, before: int, unlocked: int, next_id: String) -> void:
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 4)
+	var title := Label.new()
+	var stars: int = res["stars"]
+	title.text = "Contract: %s  -  %s" % [c["title"], ("%d of 3 stars" % stars) if res["passed"] else "not met yet"]
+	title.add_theme_font_size_override("font_size", 22)
+	title.add_theme_color_override("font_color", Color(1.0, 0.85, 0.3) if res["passed"] else Color(1.0, 0.55, 0.5))
+	box.add_child(title)
+	for g in res["goals"]:
+		var l := Label.new()
+		var ok: bool = g["ok"]
+		l.text = "%s  %s%s  (%s)" % ["YES" if ok else "NO ", "Bonus: " if g["bonus"] else "", g["text"], g["detail"]]
+		l.add_theme_font_size_override("font_size", 15)
+		l.add_theme_color_override("font_color", Color(0.5, 0.95, 0.5) if ok else (Color(1.0, 0.8, 0.3) if g["bonus"] else Color(1.0, 0.5, 0.45)))
+		box.add_child(l)
+	if stars > before and before > 0:
+		box.add_child(_note("New best: %d stars (was %d)." % [stars, before]))
+	if unlocked >= 0:
+		box.add_child(_note("Unlocked: the %s coaster! Try it in the sandbox or the next contracts." % CoasterTypes.type_name(unlocked)))
+	if res["passed"] and next_id != "":
+		box.add_child(_button("Next contract: %s" % Contracts.find(next_id)["title"], func() -> void: main.start_contract(next_id)))
+	results_box.add_child(box)
+	results_box.move_child(box, 2)
+
+
+func _note(text: String) -> Label:
+	var l := Label.new()
+	l.text = text
+	l.add_theme_font_size_override("font_size", 17)
+	l.add_theme_color_override("font_color", Color(1.0, 0.85, 0.3))
+	l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	return l

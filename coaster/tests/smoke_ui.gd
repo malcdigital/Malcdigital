@@ -79,6 +79,54 @@ func _run() -> void:
 	main.back_to_editor()
 	check(main.hud.editor_ui.visible, "back in the editor")
 
+	# --- Phase 2 --------------------------------------------------------------
+	# Coaster type switch (steel -> wooden is unlocked from the start).
+	main.set_coaster_type(CoasterTypes.Id.WOODEN)
+	check(main.data.coaster_type == CoasterTypes.Id.WOODEN, "switch to wooden")
+	main.set_coaster_type(CoasterTypes.Id.FLYING)
+	check(main.data.coaster_type == CoasterTypes.Id.WOODEN or main.progress.unlocked_types().has(CoasterTypes.Id.FLYING), "locked types stay locked")
+	main.undo()
+	check(main.data.coaster_type == CoasterTypes.Id.STEEL, "type change is undoable")
+	await _wait_analysis(main)
+
+	# Sculpt with the terrain tool: a press on the ground, hold, release.
+	main.set_tool(TrackEditor.Tool.TERRAIN)
+	main.orbit_cam.focus(Vector3(60, 0, -60), 120.0)
+	await _frames(40)
+	var target := Vector3(60, 0, -60)
+	var sp := cam.unproject_position(target)
+	var h0: float = main.data.terrain.height_at(60, -60)
+	_mouse_button(main.editor, sp, true)
+	for i in 30:
+		_mouse_move(main.editor, sp + Vector2(i % 3, 0), Vector2(1, 0))
+		await process_frame
+	_mouse_button(main.editor, sp, false)
+	var h1: float = main.data.terrain.height_at(main.editor.brush_point().x, main.editor.brush_point().z)
+	check(h1 > h0 + 0.5, "raise brush lifts the ground (%.1f -> %.1f m)" % [h0, h1])
+	main.undo()
+	check(main.data.terrain.earthworks_m3() < 1.0, "sculpting is undoable")
+
+	# Scenery: tap to place a tree, tap it again to remove it.
+	main.set_tool(TrackEditor.Tool.SCENERY)
+	await _frames(5)
+	_mouse_button(main.editor, sp, true)
+	_mouse_button(main.editor, sp, false)
+	check(main.data.props.size() == 1, "tap places a tree")
+	_mouse_button(main.editor, sp, true)
+	_mouse_button(main.editor, sp, false)
+	check(main.data.props.is_empty(), "tapping it again removes it")
+	main.set_tool(TrackEditor.Tool.TRACK)
+
+	# Contract: start the first one and see goals evaluated.
+	main.start_contract("first_steps")
+	await _wait_analysis(main)
+	check(main.data.contract_id == "first_steps", "contract started")
+	check(not main.contract_result.is_empty() and main.contract_result["goals"].size() > 3, "contract goals evaluated live")
+	main.hud.brief_panel.visible = false
+	main.leave_contract()
+	await _wait_analysis(main)
+	check(main.contract_result.is_empty(), "leaving the contract returns to sandbox")
+
 	# Save and load round trip through the UI layer.
 	main.save_track("Smoke Test Coaster")
 	var file := CoasterStorage.file_name_for("Smoke Test Coaster")

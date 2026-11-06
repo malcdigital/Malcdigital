@@ -55,7 +55,7 @@ static func _append(pts: Array[TrackPoint], kind: int, speed: float) -> void:
 
 
 ## A small flat oval: the minimum to start designing from scratch.
-static func blank() -> TrackData:
+static func blank(type_id: int = CoasterTypes.Id.STEEL) -> TrackData:
 	var t := TrackData.new()
 	t.name = "New coaster"
 	var P := TrackPoint.Segment
@@ -75,4 +75,9 @@ static func blank() -> TrackData:
 		pts[i].segment = P.STATION if i >= pts.size() - 2 else P.BRAKE
 	pts.pop_back()
 	t.points = pts
+	t.set_type(type_id)
+	if CoasterTypes.get_type(type_id)["launch"]:
+		# Launched coasters start with a launch track instead of a chain.
+		t.points[2].segment = TrackPoint.Segment.LAUNCH
+		t.launch_speed = 16.0
 	return t

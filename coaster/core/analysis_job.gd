@@ -12,7 +12,7 @@ extends RefCounted
 ## Banking does not change speed (it only rotates which way the force points,
 ## not how big it is), so the first pass's speeds are valid for the second.
 
-enum Stage { BAKE, SPEED_PASS, FORCE_PASS, SCORE, MESH, DONE }
+enum Stage { BAKE, SPEED_PASS, FORCE_PASS, SITE, SCORE, MESH, TERRAIN, DONE }
 
 ## The speed-only pass can use a coarser step: speeds converge quickly and the
 ## G-forces we report come from the second, finer pass.
@@ -26,6 +26,8 @@ var build_meshes := true
 
 var result := TrackAnalyzer.new()
 var chunks := []
+## Terrain mesh arrays with cuttings dug out (built with the track meshes).
+var terrain_arrays := []
 var stage: int = Stage.BAKE
 
 var _sim: TrainSim
@@ -75,9 +77,11 @@ func _advance(t0: int, budget: int) -> void:
 			if _run_sim(t0, budget):
 				_sim.finalize()
 				result.record = _sim.record
-				stage = Stage.SCORE
-		Stage.SCORE:
+				stage = Stage.SITE
+		Stage.SITE:
 			result.site.build(result.spline, data, result.record, Contracts.zones(data.contract_id))
+			stage = Stage.SCORE
+		Stage.SCORE:
 			result.ratings = RideScorer.score(result.record, result.spline, data, result.site)
 			var c := CostModel.estimate(data, result.spline, result.site)
 			result.cost = c["total"]
@@ -97,7 +101,10 @@ func _advance(t0: int, budget: int) -> void:
 				chunks.append(TrackMeshBuilder.build_chunk(result.spline, _colors, _chunk, data.type_info(), result.site.env))
 				_chunk += 1
 			else:
-				stage = Stage.DONE
+				stage = Stage.TERRAIN
+		Stage.TERRAIN:
+			terrain_arrays = TerrainMeshBuilder.build_arrays(data.terrain, result.site.render_heights, Contracts.zones(data.contract_id))
+			stage = Stage.DONE
 
 
 ## Steps the current sim until it finishes (true) or the budget runs out.

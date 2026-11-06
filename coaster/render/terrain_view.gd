@@ -23,14 +23,10 @@ func _ready() -> void:
 	add_child(_ground)
 	# Endless flat ground beyond the terrain grid.
 	_far = MeshInstance3D.new()
-	var plane := PlaneMesh.new()
-	plane.size = Vector2(4000, 4000)
-	_far.mesh = plane
-	_far.position = Vector3(0, -0.15, 0)
-	var far_mat := ShaderMaterial.new()
-	far_mat.shader = load("res://render/ground.gdshader")
-	far_mat.set_shader_parameter("use_vertex_color", false)
-	_far.material_override = far_mat
+	var far_mesh := ArrayMesh.new()
+	far_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, TerrainMeshBuilder.outer_ground_arrays(TerrainData.new()))
+	_far.mesh = far_mesh
+	_far.material_override = _material
 	_far.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(_far)
 	_water = MeshInstance3D.new()
@@ -38,7 +34,7 @@ func _ready() -> void:
 	wp.size = Vector2(TerrainData.SIZE, TerrainData.SIZE)
 	_water.mesh = wp
 	_water_mat = StandardMaterial3D.new()
-	_water_mat.albedo_color = Color(0.16, 0.42, 0.62, 0.78)
+	_water_mat.albedo_color = Color(0.1, 0.36, 0.62, 0.88)
 	_water_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	_water_mat.roughness = 0.08
 	_water_mat.metallic = 0.25

@@ -19,16 +19,19 @@ var _platforms: Node3D
 func _ready() -> void:
 	steel_material = StandardMaterial3D.new()
 	steel_material.vertex_color_use_as_albedo = true
+	steel_material.vertex_color_is_srgb = true
 	steel_material.metallic = 0.5
 	steel_material.roughness = 0.35
 	spine_material = StandardMaterial3D.new()
 	spine_material.vertex_color_use_as_albedo = true
+	spine_material.vertex_color_is_srgb = true
 	spine_material.roughness = 0.5
 	support_material = StandardMaterial3D.new()
 	support_material.albedo_color = Color(0.55, 0.58, 0.62)
 	support_material.roughness = 0.6
 	tunnel_material = StandardMaterial3D.new()
 	tunnel_material.vertex_color_use_as_albedo = true
+	tunnel_material.vertex_color_is_srgb = true
 	tunnel_material.roughness = 0.95
 	platform_material = StandardMaterial3D.new()
 	platform_material.albedo_color = Color(0.45, 0.42, 0.38)

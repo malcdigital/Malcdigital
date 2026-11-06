@@ -80,7 +80,7 @@ func update(sim: TrainSim, dt: float) -> void:
 		if not _chase_init:
 			_chase_pos = want
 			_chase_init = true
-		_chase_pos = _chase_pos.lerp(want, 1.0 - exp(-3.0 * dt))
+		_chase_pos = _chase_pos.lerp(want, 1.0 - exp(-7.0 * dt))
 		global_position = _chase_pos
 		if _chase_pos.distance_to(mid) > 0.5:
 			look_at(mid, Vector3.UP)

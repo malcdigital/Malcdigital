@@ -4,7 +4,8 @@ extends Node3D
 ##
 ##   Edit    - orbit camera, control-point handles, live colour overlay + stats
 ##   Ride    - real-time TrainSim, POV/chase camera, rider reactions, audio
-##   Results - ratings breakdown and problem spots (tap to jump to them)
+##   Results - ratings breakdown and problem spots (tap to jump to them),
+##             plus the contract verdict and stars when playing a contract
 
 enum Mode { EDIT, RIDE, RESULTS }
 
@@ -18,6 +19,15 @@ var analysis_data: TrackData         # the exact track that analysis describes
 var overlay_mode: int = TrackOverlay.Mode.ZONES
 
 var track_view: TrackView
+var terrain_view: TerrainView
+var progress: ProgressStore
+## Contract evaluation of the latest analysis ({} in sandbox).
+var contract_result := {}
+var brush: int = TerrainData.Brush.RAISE
+var prop_kind := Props.Kind.TREE   # -1 = remove
+var _last_terrain_draw := 0
+var _train_type := -1
+var _splashes_seen := 0
 var editor: TrackEditor
 var orbit_cam: OrbitCamera
 var ride_cam: RideCamera
@@ -36,6 +46,9 @@ var _framed_once := false
 
 func _ready() -> void:
 	WorldBuilder.build(self)
+	progress = ProgressStore.load_or_new()
+	terrain_view = TerrainView.new()
+	add_child(terrain_view)
 	track_view = TrackView.new()
 	add_child(track_view)
 	orbit_cam = OrbitCamera.new()
@@ -55,10 +68,13 @@ func _ready() -> void:
 	editor.points_moved.connect(func(live: bool) -> void:
 		request_analysis()
 		if not live: _refresh_point())
+	editor.ground_stroke.connect(_on_ground_stroke)
+	editor.ground_tap.connect(_on_ground_tap)
 	hud = Hud.new()
 	add_child(hud)
 	hud.setup(self)
 	_set_track(DefaultTracks.starter())
+	hud.refresh_type(data, progress)
 
 
 ## Never leave a worker running while the scene (and its scripts) go away.
@@ -101,6 +117,8 @@ func _process(dt: float) -> void:
 	hud.set_busy(_job != null or _dirty)
 	if mode == Mode.RIDE:
 		_ride_process(dt)
+	elif editor.is_stroking():
+		_sculpt(dt)
 
 
 func _start_job() -> void:
@@ -120,8 +138,14 @@ func _apply_job() -> void:
 	var a := job.result
 	analysis = a
 	analysis_data = job.data
+	terrain_view.show_terrain(job.data.terrain, job.terrain_arrays if not job.terrain_arrays.is_empty()
+		else TerrainMeshBuilder.build_arrays(job.data.terrain, job.data.terrain.heights, Contracts.zones(job.data.contract_id)))
+	terrain_view.show_props(job.data.terrain, job.data.props)
+	contract_result = {}
+	if a.valid and job.data.contract_id != "":
+		contract_result = ContractEvaluator.evaluate(Contracts.find(job.data.contract_id), job.data, a)
 	if a.valid:
-		track_view.show_track(a.spline, job.chunks)
+		track_view.show_track(a.spline, job.chunks, a.site, job.data.type_info())
 		editor.show_problems(a.ratings.problems, a.spline)
 		if mode != Mode.RIDE:
 			_park_train()
@@ -136,8 +160,9 @@ func _apply_job() -> void:
 
 
 func _park_train() -> void:
-	if train_view.cars.size() != analysis_data.num_cars:
-		train_view.build(analysis_data.num_cars)
+	if train_view.cars.size() != analysis_data.num_cars or _train_type != analysis_data.coaster_type:
+		train_view.build(analysis_data.num_cars, analysis_data.type_info())
+		_train_type = analysis_data.coaster_type
 	train_view.place_at(analysis.spline, analysis_data.train_length() + 1.0, analysis_data.car_spacing)
 
 
@@ -231,7 +256,11 @@ func insert_element(kind: int) -> void:
 	if sp != null:
 		heading = TrackTools.heading_at(sp, i)
 		speed = absf(analysis.record.sample_speed[sp.index_at(sp.point_s[i])])
-	var pts := Elements.build(kind, data.points[i].position, heading, speed)
+	var ctx := {"water_level": data.terrain.water_level, "seat_offset": data.type_info()["seat_offset"]}
+	if kind == Elements.Kind.LAUNCH and not data.type_info()["launch"]:
+		hud.toast("Only launched coasters have launch motors")
+		return
+	var pts := Elements.build(kind, data.points[i].position, heading, speed, ctx)
 	if pts.is_empty():
 		return
 	_begin_edit()
@@ -250,6 +279,10 @@ func smooth() -> void:
 
 func set_segment(seg: int) -> void:
 	if editor.selected < 0:
+		return
+	if not CoasterTypes.allows_segment(data.coaster_type, seg):
+		hud.toast("%s coasters can't use %s" % [CoasterTypes.type_name(data.coaster_type), TrackPoint.SEGMENT_NAMES[seg].to_lower()])
+		hud.refresh_point(data, editor.selected, _current_spline(), analysis.record if analysis else null)
 		return
 	_begin_edit()
 	data.points[editor.selected].segment = seg
@@ -277,6 +310,14 @@ func set_bank(deg: float) -> void:
 		_begin_edit()
 		_bank_edit_open = true
 	data.points[editor.selected].bank_deg = deg
+	request_analysis()
+
+
+func set_launch_speed(v: float) -> void:
+	if not _bank_edit_open:
+		_begin_edit()
+		_bank_edit_open = true
+	data.launch_speed = v
 	request_analysis()
 
 
@@ -312,6 +353,145 @@ func _current_spline() -> TrackSpline:
 
 
 # -----------------------------------------------------------------------------
+# Coaster type, terrain and scenery
+# -----------------------------------------------------------------------------
+
+func set_coaster_type(id: int) -> void:
+	if id == data.coaster_type:
+		return
+	if data.contract_id != "":
+		hud.toast("This contract needs a %s coaster" % CoasterTypes.type_name(data.coaster_type))
+		hud.refresh_type(data, progress)
+		return
+	if not progress.unlocked_types().has(id):
+		hud.toast("Finish more contracts to unlock the %s coaster" % CoasterTypes.type_name(id))
+		hud.refresh_type(data, progress)
+		return
+	_begin_edit()
+	data.set_type(id)
+	_after_edit(true)
+	hud.refresh_type(data, progress)
+	hud.toast("%s: %s" % [CoasterTypes.type_name(id), data.type_info()["blurb"]], 4.0)
+
+
+func set_tool(t: int) -> void:
+	editor.set_tool(t)
+	hud.show_tool(t)
+	if t == TrackEditor.Tool.TERRAIN:
+		hud.toast("Drag on the ground to sculpt. Two fingers (or Alt + drag) move the camera.", 4.0)
+	elif t == TrackEditor.Tool.SCENERY:
+		hud.toast("Tap the ground to place scenery. Passing close to it at speed is a near miss.", 4.0)
+
+
+func set_brush(b: int) -> void:
+	brush = b
+
+
+func set_brush_size(r: float) -> void:
+	editor.brush_radius = r
+
+
+func set_prop_kind(k: int) -> void:
+	prop_kind = k
+
+
+func set_terrain_preset(p: int) -> void:
+	if data.contract_id != "":
+		hud.toast("A contract's site can be sculpted but not replaced")
+		return
+	_begin_edit()
+	data.terrain = TerrainData.make(p)
+	_after_edit()
+	hud.toast("Terrain: %s" % TerrainData.PRESET_NAMES[p])
+
+
+var _flatten_to := 0.0
+
+func _on_ground_stroke(phase: int, point: Vector3) -> void:
+	if phase == TrackEditor.Stroke.BEGIN:
+		_flatten_to = data.terrain.height_at(point.x, point.z)
+	elif phase == TrackEditor.Stroke.END:
+		terrain_view.show_raw(data.terrain, Contracts.zones(data.contract_id))
+		_after_edit()
+
+
+## While the brush is held down: sculpt at a steady rate under it.
+func _sculpt(dt: float) -> void:
+	var p := editor.brush_point()
+	var rate := 6.0 * dt   # metres per second at the brush centre
+	match brush:
+		TerrainData.Brush.RAISE, TerrainData.Brush.LOWER:
+			data.terrain.sculpt(p, editor.brush_radius, rate, brush)
+		_:
+			data.terrain.sculpt(p, editor.brush_radius, minf(3.0 * dt, 1.0), brush, _flatten_to)
+	# Redraw a few times a second (a full terrain rebuild is not free).
+	var now := Time.get_ticks_msec()
+	if now - _last_terrain_draw > 180:
+		_last_terrain_draw = now
+		terrain_view.show_raw(data.terrain, Contracts.zones(data.contract_id))
+
+
+func _on_ground_tap(point: Vector3) -> void:
+	# Tapping an existing prop removes it; otherwise place the chosen kind.
+	var nearest := -1
+	var best := 6.0
+	for i in data.props.size():
+		var d := Vector2(data.props[i]["x"], data.props[i]["z"]).distance_to(Vector2(point.x, point.z))
+		if d < best:
+			best = d
+			nearest = i
+	if prop_kind < 0 or nearest >= 0:
+		if nearest < 0:
+			return
+		_begin_edit()
+		data.props.remove_at(nearest)
+	else:
+		_begin_edit()
+		var s := 0.8 + fposmod(point.x * 0.37 + point.z * 0.11, 0.5)
+		data.props.append(Props.make(prop_kind, snappedf(point.x, 0.1), snappedf(point.z, 0.1), s))
+	terrain_view.show_props(data.terrain, data.props)
+	_after_edit()
+
+
+# -----------------------------------------------------------------------------
+# Contracts
+# -----------------------------------------------------------------------------
+
+func start_contract(id: String) -> void:
+	var c := Contracts.find(id)
+	if c.is_empty():
+		return
+	var i := Contracts.index_of(id)
+	if not progress.is_available(i):
+		hud.toast("Finish the previous contract first")
+		return
+	var d := DefaultTracks.blank(c["type"])
+	d.name = c["title"]
+	d.terrain = TerrainData.make(c["terrain"])
+	d.contract_id = id
+	_set_track(d)
+	set_tool(TrackEditor.Tool.TRACK)
+	hud.refresh_type(data, progress)
+	hud.show_brief(c)
+
+
+func leave_contract() -> void:
+	if data.contract_id == "":
+		return
+	data.contract_id = ""
+	data.name += " (sandbox)"
+	request_analysis()
+	hud.refresh_type(data, progress)
+
+
+func next_contract_id() -> String:
+	var i := Contracts.index_of(data.contract_id)
+	if i >= 0 and i + 1 < Contracts.LIST.size() and progress.is_available(i + 1):
+		return Contracts.LIST[i + 1]["id"]
+	return ""
+
+
+# -----------------------------------------------------------------------------
 # Camera helpers
 # -----------------------------------------------------------------------------
 
@@ -344,7 +524,13 @@ func focus_s(s: float, from_results: bool) -> void:
 # -----------------------------------------------------------------------------
 
 func new_track(blank: bool) -> void:
-	_set_track(DefaultTracks.blank() if blank else DefaultTracks.starter())
+	if blank:
+		var d := DefaultTracks.blank(data.coaster_type if data.contract_id == "" else CoasterTypes.Id.STEEL)
+		d.terrain = data.terrain.copy() if data.contract_id == "" else TerrainData.new()
+		_set_track(d)
+	else:
+		_set_track(DefaultTracks.starter())
+	hud.refresh_type(data, progress)
 
 
 func save_track(name_text: String) -> void:
@@ -361,6 +547,7 @@ func load_saved(file: String) -> void:
 		hud.toast("Could not load that coaster")
 		return
 	_set_track(d)
+	hud.refresh_type(data, progress)
 	hud.toast("Loaded \"%s\"" % d.name)
 
 
@@ -383,7 +570,9 @@ func start_ride() -> void:
 	editor.enabled = false
 	_sim = TrainSim.new()
 	_sim.setup(analysis.spline, analysis_data, true, TrainSim.RIDE_DT)
-	train_view.build(analysis_data.num_cars)
+	_splashes_seen = 0
+	train_view.build(analysis_data.num_cars, analysis_data.type_info())
+	_train_type = analysis_data.coaster_type
 	train_view.reset_riders()
 	ride_cam.start()
 	ride_cam.current = true
@@ -404,6 +593,10 @@ func _ride_process(dt: float) -> void:
 		_acc -= _sim.dt
 		steps += 1
 	train_view.update_from_sim(_sim, dt, true)
+	if _sim.splashes > _splashes_seen:
+		_splashes_seen = _sim.splashes
+		var xf := _sim.spline.transform_at(_sim.s)
+		Effects.splash(self, Vector3(xf.origin.x, data.terrain.water_level, xf.origin.z), -xf.basis.z)
 	ride_cam.update(_sim, dt)
 	audio.update(_sim, train_view.screams_started(), dt)
 	hud.update_ride(_sim, train_view.sick_count(), train_view.riders.size())
@@ -413,13 +606,22 @@ func _ride_process(dt: float) -> void:
 
 func _finish_ride() -> void:
 	_sim.finalize()
-	var ratings := RideScorer.score(_sim.record, _sim.spline)
+	var ratings := RideScorer.score(_sim.record, _sim.spline, analysis_data, analysis.site)
 	mode = Mode.RESULTS
 	audio.stop()
 	orbit_cam.current = true
 	editor.visible = true
 	editor.enabled = false
 	hud.show_results(ratings, _sim.completed, train_view.sick_count(), train_view.riders.size())
+	if analysis_data.contract_id != "":
+		# The contract is judged on the analysed design (the same physics as
+		# the ride you just watched).
+		var res := ContractEvaluator.evaluate(Contracts.find(analysis_data.contract_id), analysis_data, analysis)
+		var before := progress.best(analysis_data.contract_id)
+		var unlocked := -1
+		if res["stars"] > 0:
+			unlocked = progress.record(analysis_data.contract_id, res["stars"])
+		hud.show_contract_result(Contracts.find(analysis_data.contract_id), res, before, unlocked, next_contract_id())
 	if not _sim.completed:
 		orbit_cam.focus(_sim.spline.position_at(_sim.stall_s), 50.0)
 

@@ -12,7 +12,8 @@ varying vec3 vcol;
 
 void vertex() {
 	world_pos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz;
-	vcol = COLOR.rgb;
+	// Vertex colours are authored in sRGB; lighting works in linear space.
+	vcol = pow(COLOR.rgb, vec3(2.2));
 }
 
 float grid(vec2 p, float spacing, float width) {

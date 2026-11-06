@@ -4,12 +4,44 @@ extends RefCounted
 ## height and slope: sand by the water, grass, rock on steep faces, and a
 ## light path colour inside contract zones.
 
-const GRASS := Color(0.27, 0.45, 0.2)
-const GRASS_HIGH := Color(0.36, 0.5, 0.24)
-const ROCK := Color(0.47, 0.43, 0.38)
-const SAND := Color(0.76, 0.69, 0.5)
-const LAKE_BED := Color(0.35, 0.37, 0.28)
-const PATH := Color(0.78, 0.7, 0.55)
+const GRASS := Color(0.4, 0.6, 0.27)
+const GRASS_HIGH := Color(0.48, 0.64, 0.31)
+const ROCK := Color(0.6, 0.56, 0.5)
+const SAND := Color(0.7, 0.64, 0.46)
+const LAKE_BED := Color(0.38, 0.42, 0.32)
+const PATH := Color(0.87, 0.8, 0.64)
+
+
+## Endless flat ground around the terrain square (a frame with a hole, so it
+## never covers a lake dug below height 0).
+static func outer_ground_arrays(t: TerrainData) -> Array:
+	var verts := PackedVector3Array()
+	var colors := PackedColorArray()
+	var normals := PackedVector3Array()
+	var indices := PackedInt32Array()
+	var x0 := t.origin.x
+	var z0 := t.origin.y
+	var x1 := x0 + TerrainData.SIZE
+	var z1 := z0 + TerrainData.SIZE
+	var far := 3000.0
+	# Four rectangles: north, south, west, east of the terrain.
+	var rects := [
+		[x0 - far, z0 - far, x1 + far, z0], [x0 - far, z1, x1 + far, z1 + far],
+		[x0 - far, z0, x0, z1], [x1, z0, x1 + far, z1]]
+	for r in rects:
+		var b := verts.size()
+		for c in [[r[0], r[1]], [r[2], r[1]], [r[2], r[3]], [r[0], r[3]]]:
+			verts.append(Vector3(c[0], 0.0, c[1]))
+			normals.append(Vector3.UP)
+			colors.append(GRASS)
+		indices.append_array(PackedInt32Array([b, b + 1, b + 2, b, b + 2, b + 3]))
+	var arr := []
+	arr.resize(Mesh.ARRAY_MAX)
+	arr[Mesh.ARRAY_VERTEX] = verts
+	arr[Mesh.ARRAY_NORMAL] = normals
+	arr[Mesh.ARRAY_COLOR] = colors
+	arr[Mesh.ARRAY_INDEX] = indices
+	return arr
 
 
 static func build_arrays(t: TerrainData, h: PackedFloat32Array, zones: Array) -> Array:
@@ -43,9 +75,7 @@ static func build_arrays(t: TerrainData, h: PackedFloat32Array, zones: Array) ->
 				var rect: Rect2 = z["rect"]
 				if rect.has_point(w):
 					c = PATH
-			# A little variation so large flat areas don't look plastic.
-			var v := 0.93 + 0.07 * sin(w.x * 0.11 + sin(w.y * 0.07) * 3.0)
-			colors[idx] = Color(c.r * v, c.g * v, c.b * v)
+			colors[idx] = c
 	for j in res - 1:
 		for i in res - 1:
 			var a := j * res + i

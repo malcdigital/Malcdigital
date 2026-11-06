@@ -72,7 +72,7 @@ static func make(p: int) -> TerrainData:
 					h = ridge * (28.0 + noise.get_noise_2d(w.x, w.y) * 14.0)
 			# Keep the station area flat and at height 0, and fade to 0 at the
 			# edges so the terrain meets the endless flat ground beyond it.
-			var station := smoothstep(26.0, 50.0, w.distance_to(Vector2(0.0, -10.0)))
+			var station := smoothstep(45.0, 85.0, w.distance_to(Vector2(10.0, -40.0)))
 			var edge := minf(minf(i, RES - 1 - i), minf(j, RES - 1 - j)) * CELL
 			t.heights[j * RES + i] = h * station * smoothstep(0.0, 60.0, edge)
 	if p == Preset.LAKE:
