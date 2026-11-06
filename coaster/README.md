@@ -29,28 +29,28 @@ CI runs both on every push that touches `coaster/` (`.github/workflows/coaster.y
 | Zoom | Wheel | Pinch |
 | Select point | Click a handle | Tap a handle |
 | Move point across ground | Drag a handle | Drag a handle |
-| Move point up/down | Shift + drag, PgUp/PgDn | **↕ Height** toggle, then drag; or ▲/▼ buttons |
+| Move point up/down | Shift + drag, PgUp/PgDn | **Height mode** toggle, then drag; or **Up/Down 1 m** buttons |
 | Add point after selected | N / Insert | **+ Point** |
 | Delete point | Delete / Backspace | **Delete** |
 | Undo / redo | Ctrl+Z / Ctrl+Y (or Ctrl+Shift+Z) | **Undo** / **Redo** |
-| Test ride | Space / Enter | **▶ Test ride** |
+| Test ride | Space / Enter | **Test ride** |
 | Ride camera POV ↔ chase | C | **Camera** button |
 | Ride speed 1×/2×/4× | Tab | **Speed** button |
 | Look around (POV) | Drag | Drag |
-| Stop ride | Esc / Space | **■ Stop** |
+| Stop ride | Esc / Space | **Stop** |
 
 Big handles are control points you place. Small dots are the inner points of generated elements; you can drag them too. Handle colour shows the segment type: white is normal, blue is chain lift, pink is launch, orange is brakes, green is station.
 
 ## What to test
 
 1. **Ride the starter coaster.** Press Test ride. Watch the chain lift, the drop, airtime on the hill, the banked turn and the loop. Switch to the chase cam and watch riders raise their hands on the airtime hill. Check the results screen. It should rate Thrill about 7.6, Intensity 3.2 and Nausea 2.4, and show two yellow airtime spots. Tap **Show** on one to jump there.
-2. **Make it stall.** Tap the small dot at the top of the first airtime hill (about 24 m). Turn on ↕ Height and drag it up to about 38 m, taller than the 35 m lift. The stats panel should change to **✗ Stalls at … m**. Ride it and the train rolls back from the hill and rocks to a stop. Undo to fix it.
+2. **Make it stall.** Tap the small dot at the top of the first airtime hill (about 24 m). Turn on Height mode and drag it up to about 38 m, taller than the 35 m lift. The stats panel should change to **STALLS at … m**. Ride it and the train rolls back from the hill and rocks to a stop. Undo to fix it.
 3. **Hurt the riders.** Raise the lift's top points (blue/white handles around 32–35 m) to about 50 m. The extra speed pushes the valleys and loop past 7 g. Those parts turn red, the graph spikes, and red markers appear over the track. Also try dragging a point at the bottom of a drop to make a tight kink.
 4. **Banking.** Select a point in the big turn and switch off Auto-bank. The bank slider takes over. Set it to 0° and watch lateral G turn red, then switch Auto-bank back on.
 5. **Elements.** Select a point on the return straight and use Add element → Airtime hill (or Loop, Helix…). Each element is sized from the train's speed at that point. Undo if it collides with other track.
 6. **Overlays.** Switch the top dropdown between Comfort zones, Speed, Vertical G and Lateral G.
 7. **Save/load.** Use File → Save…, then File → New: blank oval, then File → Load…
-8. **On a phone or tablet:** export (see below) and try everything with touch, especially pinch and the ↕ Height toggle.
+8. **On a phone or tablet:** export (see below) and try everything with touch, especially pinch and the Height mode toggle.
 
 ## Project layout
 
@@ -104,6 +104,7 @@ All the maths is commented in the code. The key ideas:
 
 In the Godot editor: **Editor → Manage Export Templates → Download**, then **Project → Export… → Add…**
 
+- **Web:** the repo includes a `Web` preset (single-threaded, so it needs no special server headers). Run `godot --headless --path coaster --export-release Web build/web/index.html` and serve `build/web/` over HTTP. The web build uses the Compatibility renderer, and background analysis runs on the main thread, so edits can stutter briefly.
 - **Windows / macOS:** add the preset and export. macOS builds need signing and notarisation for distribution.
 - **Android:** set the Android SDK path in Editor Settings and create a debug keystore. Then use the Android preset with "Use Gradle Build" off and press **Remote Debug** to run on a USB-connected phone.
 - **iOS:** export the Xcode project from a Mac, open it in Xcode, set your team, and run.

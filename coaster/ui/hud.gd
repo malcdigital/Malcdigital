@@ -51,6 +51,7 @@ var _updating := false
 
 func setup(p_main: Node) -> void:
 	main = p_main
+	_update_scale()   # before building, so controls measure text at the final scale
 	_build_theme()
 	root = Control.new()
 	root.set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -74,6 +75,7 @@ func setup(p_main: Node) -> void:
 
 
 func _process(dt: float) -> void:
+	_update_scale()
 	if _toast_time > 0.0:
 		_toast_time -= dt
 		toast_label.modulate.a = clampf(_toast_time, 0.0, 1.0)
@@ -131,6 +133,47 @@ func _button(text: String, cb: Callable, toggle: bool = false) -> Button:
 	return b
 
 
+func _column(parent: Control, at_top: bool) -> VBoxContainer:
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 6)
+	v.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	parent.add_child(v)
+	v.set_anchors_preset(Control.PRESET_TOP_WIDE if at_top else Control.PRESET_BOTTOM_WIDE)
+	v.offset_left = 8
+	v.offset_right = -8
+	v.offset_top = 8 if at_top else -8
+	v.offset_bottom = 8 if at_top else -8
+	v.grow_vertical = Control.GROW_DIRECTION_END if at_top else Control.GROW_DIRECTION_BEGIN
+	return v
+
+
+## Phones: the UI is laid out for 1280x720 and normally scales with the
+## window, which makes it tiny on a small (or portrait) screen. When the
+## short side of the screen is small, scale up so buttons stay finger-sized.
+## Works in CSS/logical pixels so high-DPI screens are treated the same.
+var _last_window_size := Vector2i.ZERO
+var compact := false
+
+func _update_scale() -> void:
+	var win := get_window()
+	if win.size == _last_window_size:
+		return
+	_last_window_size = win.size
+	var dpr := maxf(DisplayServer.screen_get_scale(), 1.0)
+	var size_css := Vector2(win.size) / dpr
+	var base := minf(size_css.x / 1280.0, size_css.y / 720.0)
+	var short_side := minf(size_css.x, size_css.y)
+	var was_compact := compact
+	compact = short_side < 620.0
+	var want := maxf(base, short_side / 560.0) if compact else base
+	win.content_scale_factor = maxf(1.0, want / maxf(base, 0.01))
+	if root != null:
+		# Re-measure every control's text at the new scale.
+		root.propagate_notification(Control.NOTIFICATION_THEME_CHANGED)
+	if compact and not was_compact and graph != null:
+		graph_toggle.button_pressed = false   # make room on small screens
+
+
 func _panel(parent: Control) -> PanelContainer:
 	var p := PanelContainer.new()
 	parent.add_child(p)
@@ -155,14 +198,18 @@ func _build_editor_ui() -> void:
 	editor_ui.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	root.add_child(editor_ui)
 
+	# Layout: a column pinned to the top (toolbar, then stats + point panel) and
+	# one pinned to the bottom (graph, then toolbar). Toolbars are flow
+	# containers so they wrap onto two rows on narrow (portrait) screens.
+	var top_v := _column(editor_ui, true)
+	var bottom_v := _column(editor_ui, false)
+
 	# --- Top bar ---------------------------------------------------------------
-	var top := HBoxContainer.new()
-	top.add_theme_constant_override("separation", 6)
-	editor_ui.add_child(top)
-	top.set_anchors_preset(Control.PRESET_TOP_WIDE)
-	top.offset_left = 8
-	top.offset_top = 8
-	top.offset_right = -8
+	var top := HFlowContainer.new()
+	top.add_theme_constant_override("h_separation", 6)
+	top.add_theme_constant_override("v_separation", 6)
+	top.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	top_v.add_child(top)
 	undo_btn = _button("Undo", func() -> void: main.undo())
 	redo_btn = _button("Redo", func() -> void: main.redo())
 	top.add_child(undo_btn)
@@ -173,8 +220,8 @@ func _build_editor_ui() -> void:
 	file_menu.flat = false
 	var fp := file_menu.get_popup()
 	fp.add_theme_font_size_override("font_size", 22)
-	fp.add_item("Save…", 0)
-	fp.add_item("Load…", 1)
+	fp.add_item("Save...", 0)
+	fp.add_item("Load...", 1)
 	fp.add_separator()
 	fp.add_item("New: starter coaster", 2)
 	fp.add_item("New: blank oval", 3)
@@ -189,49 +236,56 @@ func _build_editor_ui() -> void:
 	overlay_option.item_selected.connect(func(i: int) -> void: main.set_overlay(i))
 	top.add_child(overlay_option)
 	graph_toggle = _button("Graph", func(on: bool) -> void: graph.visible = on, true)
-	graph_toggle.set_pressed_no_signal(true)
+	graph_toggle.set_pressed_no_signal(not compact)
 	top.add_child(graph_toggle)
 	var spacer := Control.new()
 	spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	spacer.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	top.add_child(spacer)
 	busy_label = Label.new()
-	busy_label.text = "…"
+	busy_label.text = ""
 	busy_label.modulate = Color(1, 1, 1, 0.6)
 	top.add_child(busy_label)
-	var ride := _button("▶  Test ride", func() -> void: main.start_ride())
+	var ride := _button("Test ride", func() -> void: main.start_ride())
 	ride.add_theme_font_size_override("font_size", 22)
 	ride.add_theme_color_override("font_color", Color(1.0, 0.85, 0.3))
 	top.add_child(ride)
 
 	# --- Stats (top left) ------------------------------------------------------
-	var sp := _panel(editor_ui)
-	sp.position = Vector2(8, 70)
-	sp.custom_minimum_size = Vector2(290, 0)
+	var row := HBoxContainer.new()
+	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	top_v.add_child(row)
+	var sp := _panel(row)
+	sp.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
 	sp.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	stats_label = RichTextLabel.new()
 	stats_label.bbcode_enabled = true
 	stats_label.fit_content = true
 	stats_label.scroll_active = false
-	stats_label.custom_minimum_size = Vector2(290, 0)
+	stats_label.custom_minimum_size = Vector2(265, 0)
 	stats_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	stats_label.add_theme_font_size_override("normal_font_size", 15)
 	stats_label.add_theme_font_size_override("bold_font_size", 15)
 	sp.add_child(stats_label)
+	var row_gap := Control.new()
+	row_gap.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row_gap.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	row.add_child(row_gap)
 
 	# --- Bottom bar ------------------------------------------------------------
-	var bottom := HBoxContainer.new()
-	bottom.add_theme_constant_override("separation", 6)
-	editor_ui.add_child(bottom)
-	bottom.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
-	bottom.offset_left = 8
-	bottom.offset_right = -8
-	bottom.offset_top = -60
-	bottom.offset_bottom = -8
+	graph = TrackGraph.new()
+	bottom_v.add_child(graph)
+	graph.visible = not compact
+	graph.picked.connect(func(s: float) -> void: main.focus_s(s, false))
+	var bottom := HFlowContainer.new()
+	bottom.add_theme_constant_override("h_separation", 6)
+	bottom.add_theme_constant_override("v_separation", 6)
+	bottom.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	bottom_v.add_child(bottom)
 	bottom.add_child(_button("+ Point", func() -> void: main.add_point()))
 	bottom.add_child(_button("Delete", func() -> void: main.delete_point()))
 	var el := MenuButton.new()
-	el.text = "Add element ▾"
+	el.text = "Add element"
 	el.custom_minimum_size = Vector2(52, 52)
 	el.flat = false
 	var ep := el.get_popup()
@@ -243,7 +297,7 @@ func _build_editor_ui() -> void:
 	ep.id_pressed.connect(func(id: int) -> void: main.insert_element(id))
 	bottom.add_child(el)
 	bottom.add_child(_button("Smooth", func() -> void: main.smooth()))
-	height_toggle = _button("↕ Height", func(on: bool) -> void: main.set_height_mode(on), true)
+	height_toggle = _button("Height mode", func(on: bool) -> void: main.set_height_mode(on), true)
 	bottom.add_child(height_toggle)
 	snap_toggle = _button("Snap", func(on: bool) -> void: main.set_snap(on), true)
 	snap_toggle.set_pressed_no_signal(true)
@@ -254,22 +308,10 @@ func _build_editor_ui() -> void:
 	bottom.add_child(spacer2)
 	bottom.add_child(_button("Fit view", func() -> void: main.frame_track()))
 
-	# --- Graph -----------------------------------------------------------------
-	graph = TrackGraph.new()
-	editor_ui.add_child(graph)
-	graph.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
-	graph.offset_left = 8
-	graph.offset_right = -8
-	graph.offset_top = -158
-	graph.offset_bottom = -68
-	graph.picked.connect(func(s: float) -> void: main.focus_s(s, false))
-
 	# --- Point inspector (right) ------------------------------------------------
-	point_panel = _panel(editor_ui)
-	point_panel.set_anchors_preset(Control.PRESET_TOP_RIGHT)
-	point_panel.offset_left = -270
-	point_panel.offset_right = -8
-	point_panel.offset_top = 70
+	point_panel = _panel(row)
+	point_panel.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
+	point_panel.custom_minimum_size = Vector2(240, 0)
 	var v := VBoxContainer.new()
 	v.add_theme_constant_override("separation", 6)
 	point_panel.add_child(v)
@@ -305,10 +347,10 @@ func _build_editor_ui() -> void:
 	height_label = Label.new()
 	v.add_child(height_label)
 	var hb := HBoxContainer.new()
-	hb.add_child(_button("▲ 1 m", func() -> void: main.nudge(Vector3.UP)))
-	hb.add_child(_button("▼ 1 m", func() -> void: main.nudge(Vector3.DOWN)))
+	hb.add_child(_button("Up 1 m", func() -> void: main.nudge(Vector3.UP)))
+	hb.add_child(_button("Down 1 m", func() -> void: main.nudge(Vector3.DOWN)))
+	hb.add_child(_button("Focus", func() -> void: main.focus_selected()))
 	v.add_child(hb)
-	v.add_child(_button("Focus", func() -> void: main.focus_selected()))
 	point_panel.visible = false
 
 
@@ -333,7 +375,7 @@ func show_editor() -> void:
 
 
 func set_busy(busy: bool) -> void:
-	busy_label.text = "analysing…" if busy else ""
+	busy_label.text = "analysing..." if busy else ""
 
 
 func refresh_history(can_undo: bool, can_redo: bool) -> void:
@@ -371,11 +413,11 @@ func update_analysis(a: TrackAnalyzer) -> void:
 		return
 	var st := a.ratings.stats
 	var r := a.ratings
-	var status := "[color=#6f6]✓ Completes the circuit[/color]"
+	var status := "[color=#6f6]Completes the circuit[/color]"
 	if not a.record.completed:
-		status = "[color=#f66]✗ Stalls at %.0f m[/color]" % a.record.stall_s
+		status = "[color=#f66]STALLS at %.0f m[/color]" % a.record.stall_s
 	elif a.record.rollbacks > 0:
-		status = "[color=#fc4]⚠ Rolls back at %.0f m[/color]" % a.record.stall_s
+		status = "[color=#fc4]Rolls back at %.0f m[/color]" % a.record.stall_s
 	var reds := 0
 	var yellows := 0
 	for p in r.problems:
@@ -442,7 +484,7 @@ func _build_ride_ui() -> void:
 	bar.add_child(cam_btn)
 	fast_btn = _button("Speed 1×", func() -> void: main.cycle_ride_speed())
 	bar.add_child(fast_btn)
-	bar.add_child(_button("■ Stop", func() -> void: main.stop_ride()))
+	bar.add_child(_button("Stop", func() -> void: main.stop_ride()))
 
 
 func show_ride() -> void:

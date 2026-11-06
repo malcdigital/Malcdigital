@@ -114,7 +114,7 @@ func refresh_handles() -> void:
 		# Handles grow with camera distance so they stay tappable.
 		var d := camera.global_position.distance_to(p.position) if camera else 50.0
 		# Roughly constant size on screen so handles stay tappable when far away.
-		var s := clampf(d / 60.0, 0.5, 8.0) * (1.5 if sel else (0.4 if p.minor else 1.0))
+		var s := clampf(d / 85.0, 0.5, 6.0) * (1.5 if sel else (0.35 if p.minor else 1.0))
 		h.scale = Vector3.ONE * s
 		var st := _stems[i]
 		st.visible = sel or p.position.y > 2.0

@@ -280,7 +280,7 @@ func nudge(delta: Vector3) -> void:
 
 func set_height_mode(on: bool) -> void:
 	editor.height_mode = on
-	hud.toast("Dragging a point now moves it up/down" if on else "Dragging a point now moves it across the ground")
+	hud.toast("Height mode on: dragging a point moves it up and down" if on else "Height mode off: dragging a point moves it across the ground")
 
 
 func set_snap(on: bool) -> void:
@@ -310,7 +310,7 @@ func frame_track() -> void:
 	var aabb := AABB(data.points[0].position, Vector3.ZERO)
 	for p in data.points:
 		aabb = aabb.expand(p.position)
-	orbit_cam.focus(aabb.get_center(), clampf(aabb.size.length() * 0.85, 30.0, 800.0))
+	orbit_cam.focus(aabb.get_center(), clampf(aabb.size.length() * 0.62, 30.0, 800.0))
 
 
 func focus_selected() -> void:
