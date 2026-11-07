@@ -27,7 +27,11 @@ const MIN_Y := -25.0
 
 var data: TrackData
 var camera: OrbitCamera
-var selected := -1
+var selected := -1                 # the primary (last tapped) point
+## All selected points (multi-select). Always contains `selected` when >= 0.
+var selection: Array[int] = []
+## Touch-friendly multi-select: taps add/remove points instead of replacing.
+var multi_mode := false
 var height_mode := false     # toggled from the UI; Shift does the same on desktop
 var snap := true
 var snap_step := 0.5
@@ -102,6 +106,9 @@ func set_data(d: TrackData) -> void:
 	data = d
 	if selected >= data.points.size():
 		selected = -1
+	selection = selection.filter(func(i: int) -> bool: return i < data.points.size())
+	if selected >= 0 and not selection.has(selected):
+		selection.append(selected)
 	rebuild_handles()
 
 
@@ -135,7 +142,7 @@ func refresh_handles() -> void:
 		var p := data.points[i]
 		var h := _handles[i]
 		h.position = p.position
-		var sel := i == selected
+		var sel := selection.has(i)
 		var mat: Material = _selected_mat if sel else _materials[p.segment]
 		if h.material_override != mat:
 			h.material_override = mat
@@ -151,6 +158,7 @@ func refresh_handles() -> void:
 		st.scale = Vector3(s, maxf(p.position.y, 0.01), s)
 		if st.material_override != mat:
 			st.material_override = mat
+	_refresh_curve_handles()
 
 
 var _last_cam := Transform3D()
@@ -164,8 +172,140 @@ func _process(_dt: float) -> void:
 
 func select(index: int) -> void:
 	selected = index
+	selection.clear()
+	if index >= 0:
+		selection.append(index)
 	refresh_handles()
 	selection_changed.emit(selected)
+
+
+## Add a point to the selection, or remove it if it is already selected.
+func toggle_select(index: int) -> void:
+	if selection.has(index):
+		selection.erase(index)
+		selected = selection.back() if not selection.is_empty() else -1
+	else:
+		selection.append(index)
+		selected = index
+	refresh_handles()
+	selection_changed.emit(selected)
+
+
+func select_all() -> void:
+	selection.clear()
+	for i in data.points.size():
+		selection.append(i)
+	selected = data.points.size() - 1
+	refresh_handles()
+	selection_changed.emit(selected)
+
+
+# -----------------------------------------------------------------------------
+# Curve handles (Bezier), shown for a single selected point
+# -----------------------------------------------------------------------------
+
+var _curve_dots: Array[MeshInstance3D] = []
+var _curve_lines: MeshInstance3D
+var _curve_mesh: ImmediateMesh
+var _handle_mat: StandardMaterial3D
+var _dragging_handle := -1          # 0 = incoming, 1 = outgoing
+
+
+func _curve_handles_visible() -> bool:
+	return tool == Tool.TRACK and selection.size() == 1 and selected >= 0 and selected < data.points.size()
+
+
+## World positions of the selected point's two handles [in, out].
+func handle_positions() -> PackedVector3Array:
+	var h := TrackSpline.current_handles(data.points, selected, not data.open)
+	var p := data.points[selected].position
+	return PackedVector3Array([p + h[0], p + h[1]])
+
+
+func _refresh_curve_handles() -> void:
+	if _curve_lines == null:
+		_handle_mat = _flat(Color(0.3, 0.9, 1.0), 1.0)
+		_handle_mat.no_depth_test = true
+		_curve_mesh = ImmediateMesh.new()
+		_curve_lines = MeshInstance3D.new()
+		_curve_lines.mesh = _curve_mesh
+		_curve_lines.material_override = _handle_mat
+		_curve_lines.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		add_child(_curve_lines)
+		for i in 2:
+			var dot := MeshInstance3D.new()
+			dot.mesh = _sphere
+			dot.material_override = _handle_mat
+			dot.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+			add_child(dot)
+			_curve_dots.append(dot)
+	var show := _curve_handles_visible()
+	_curve_lines.visible = show
+	for d in _curve_dots:
+		d.visible = show
+	if not show:
+		return
+	var p := data.points[selected].position
+	var hp := handle_positions()
+	_curve_mesh.clear_surfaces()
+	_curve_mesh.surface_begin(Mesh.PRIMITIVE_LINES)
+	for i in 2:
+		_curve_mesh.surface_add_vertex(p)
+		_curve_mesh.surface_add_vertex(hp[i])
+	_curve_mesh.surface_end()
+	for i in 2:
+		_curve_dots[i].position = hp[i]
+		var dd := camera.global_position.distance_to(hp[i]) if camera else 50.0
+		_curve_dots[i].scale = Vector3.ONE * clampf(dd / 85.0, 0.5, 6.0) * 0.8
+
+
+func _pick_curve_handle(screen: Vector2) -> int:
+	if not _curve_handles_visible():
+		return -1
+	var hp := handle_positions()
+	var best := -1
+	var best_d := PICK_RADIUS_PX * maxf(1.0, get_viewport().get_visible_rect().size.y / 720.0)
+	for i in 2:
+		if camera.is_position_behind(hp[i]):
+			continue
+		var d := camera.unproject_position(hp[i]).distance_to(screen)
+		if d < best_d:
+			best_d = d
+			best = i
+	return best
+
+
+## Drag a handle. Smooth points keep the other handle pointing the opposite
+## way (its length is kept); Corner points (or Alt held) move one handle only.
+## Dragging an Auto point's handle turns it into a Smooth point.
+func _drag_curve_handle(screen: Vector2) -> void:
+	var p := data.points[selected]
+	var hp := handle_positions()
+	if p.handle_mode == TrackPoint.Handle.AUTO:
+		var cur := TrackSpline.current_handles(data.points, selected, not data.open)
+		p.handle_in = cur[0]
+		p.handle_out = cur[1]
+		p.handle_mode = TrackPoint.Handle.SMOOTH
+	var hit = _ray_to_drag_target(screen, hp[_dragging_handle], _vertical_drag())
+	if hit == null:
+		return
+	var off: Vector3 = (hit as Vector3) - p.position
+	if _vertical_drag():
+		var old := p.handle_in if _dragging_handle == 0 else p.handle_out
+		off = Vector3(old.x, off.y, old.z)
+	if off.length() < 0.5:
+		return
+	var corner := p.handle_mode == TrackPoint.Handle.CORNER or Input.is_key_pressed(KEY_ALT)
+	if _dragging_handle == 0:
+		p.handle_in = off
+		if not corner:
+			p.handle_out = -off.normalized() * p.handle_out.length()
+	else:
+		p.handle_out = off
+		if not corner:
+			p.handle_in = -off.normalized() * p.handle_in.length()
+	refresh_handles()
+	points_moved.emit(true)
 
 
 ## Problem-spot markers (from RideScorer) shown as floating diamonds.
@@ -219,11 +359,27 @@ func _unhandled_input(event: InputEvent) -> void:
 			_pressing = true
 			_press_pos = event.position
 			_drag_started = false
+			_dragging_handle = _pick_curve_handle(event.position)
+			if _dragging_handle >= 0:
+				_dragging_point = true
+				get_viewport().set_input_as_handled()
+				return
 			var hit := _pick(event.position)
+			var additive := multi_mode or Input.is_key_pressed(KEY_CTRL) or Input.is_key_pressed(KEY_META)
+			_tap_toggles = -1
 			if hit >= 0:
 				_dragging_point = true
-				if hit != selected:
-					select(hit)
+				if additive:
+					if selection.has(hit):
+						_tap_toggles = hit     # a tap (no drag) will deselect it
+						selected = hit
+					else:
+						toggle_select(hit)
+				elif not selection.has(hit) or selection.size() == 1:
+					if hit != selected:
+						select(hit)
+				else:
+					selected = hit          # keep the group, drag it by this point
 				_drag_offset = Vector3.ZERO
 				var on_plane: Variant = _ray_to_drag_target(event.position, data.points[hit].position, false)
 				if on_plane != null:
@@ -234,8 +390,11 @@ func _unhandled_input(event: InputEvent) -> void:
 		elif _pressing:
 			if _dragging_point and _drag_started:
 				points_moved.emit(false)
-			elif not _drag_started and event.position.distance_to(_press_pos) < DRAG_THRESHOLD_PX and _pick(event.position) < 0 and selected >= 0:
+			elif not _drag_started and _tap_toggles >= 0:
+				toggle_select(_tap_toggles)
+			elif not _drag_started and event.position.distance_to(_press_pos) < DRAG_THRESHOLD_PX and _pick(event.position) < 0 and selected >= 0 and not multi_mode:
 				select(-1)   # tap on empty space deselects
+			_dragging_handle = -1
 			_pressing = false
 			_dragging_point = false
 			camera.end_drag()
@@ -249,18 +408,21 @@ func _unhandled_input(event: InputEvent) -> void:
 			_drag_started = true
 			if _dragging_point:
 				edit_started.emit()
-		if _dragging_point and selected >= 0:
+		if _dragging_handle >= 0 and selected >= 0:
+			_drag_curve_handle(event.position)
+		elif _dragging_point and selected >= 0:
 			_drag_point(event.position)
 		get_viewport().set_input_as_handled()
 
 
+var _tap_toggles := -1
 var _preview: MeshInstance3D
 var _preview_mesh: ImmediateMesh
 
 
 ## A quick outline of the track through its control points, drawn while
 ## dragging when full re-analysis is deferred (web build). Uniform
-## Catmull-Rom, a few steps per segment: costs almost nothing.
+## Bezier segments, a few steps each: costs almost nothing.
 func show_preview() -> void:
 	if _preview == null:
 		_preview_mesh = ImmediateMesh.new()
@@ -279,15 +441,9 @@ func show_preview() -> void:
 	var segs := n - 1 if data.open else n
 	_preview_mesh.surface_begin(Mesh.PRIMITIVE_LINE_STRIP)
 	for i in segs:
-		var p1 := pts[i].position
-		var p2 := pts[(i + 1) % n].position
-		var p0 := pts[(i - 1 + n) % n].position if (i > 0 or not data.open) else p1 * 2.0 - p2
-		var p3 := pts[(i + 2) % n].position if (i + 2 < n or not data.open) else p2 * 2.0 - p1
-		for k in 8:
-			var t := float(k) / 8.0
-			var t2 := t * t
-			var t3 := t2 * t
-			_preview_mesh.surface_add_vertex(0.5 * ((2.0 * p1) + (-p0 + p2) * t + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t2 + (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * t3))
+		var c := TrackSpline.segment_controls(pts, i, not data.open)
+		for k in 10:
+			_preview_mesh.surface_add_vertex(TrackSpline.bezier(c, float(k) / 10.0))
 	_preview_mesh.surface_add_vertex(pts[segs % n].position)
 	_preview_mesh.surface_end()
 	_preview.visible = true
@@ -424,6 +580,13 @@ func _drag_point(screen: Vector2) -> void:
 		np = np.snapped(Vector3.ONE * snap_step)
 	np.y = clampf(np.y, MIN_Y, MAX_HEIGHT)
 	if np != p.position:
+		# Move every selected point by the same amount.
+		var delta := np - p.position
+		for i in selection:
+			if i != selected:
+				var q := data.points[i]
+				q.position = q.position + delta
+				q.position.y = clampf(q.position.y, MIN_Y, MAX_HEIGHT)
 		p.position = np
 		refresh_handles()
 		points_moved.emit(true)
@@ -434,8 +597,9 @@ func nudge(delta: Vector3) -> void:
 	if selected < 0:
 		return
 	edit_started.emit()
-	var p := data.points[selected]
-	p.position = (p.position + delta)
-	p.position.y = clampf(p.position.y, MIN_Y, MAX_HEIGHT)
+	for i in selection:
+		var p := data.points[i]
+		p.position = (p.position + delta)
+		p.position.y = clampf(p.position.y, MIN_Y, MAX_HEIGHT)
 	refresh_handles()
 	points_moved.emit(false)

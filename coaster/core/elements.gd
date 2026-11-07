@@ -36,8 +36,9 @@ const MIN_HEIGHT := 1.0
 static func build(kind: int, entry: Vector3, forward: Vector3, speed: float, ctx: Dictionary = {}) -> Array[TrackPoint]:
 	var pts := _build(kind, entry, forward, speed, ctx)
 	# Interior points of dense, generated shapes are "minor": the editor
-	# shows them as small dots so the element reads as one piece.
-	if pts.size() > 4:
+	# shows them as small dots so the element reads as one piece. Points with
+	# curve handles stay full-size: they are the ones to reshape.
+	if pts.size() > 4 and pts[0].handle_mode == TrackPoint.Handle.AUTO:
 		for i in range(0, pts.size() - 1):
 			pts[i].minor = true
 	return pts
@@ -76,12 +77,12 @@ static func _build(kind: int, entry: Vector3, forward: Vector3, speed: float, ct
 			# comfortable ~2 g straight into the seat.
 			var radius := clampf(v * v / (9.81 * 1.8), 12.0, 30.0)
 			var drop := clampf(entry.y - MIN_HEIGHT, 0.0, radius * 0.7)
-			return turn(entry, forward, dir, radius, TAU, drop)
+			return bezier_turn(entry, forward, dir, radius, TAU, drop)
 		Kind.TURN_LEFT, Kind.TURN_RIGHT, Kind.UTURN_LEFT, Kind.UTURN_RIGHT:
 			var dir := -1.0 if kind == Kind.TURN_LEFT or kind == Kind.UTURN_LEFT else 1.0
 			var angle := PI * 0.5 if kind == Kind.TURN_LEFT or kind == Kind.TURN_RIGHT else PI
 			var radius := clampf(v * v / (9.81 * 1.5), 10.0, 35.0)
-			return turn(entry, forward, dir, radius, angle, 0.0)
+			return bezier_turn(entry, forward, dir, radius, angle, 0.0)
 		Kind.LIFT_HILL:
 			var h := 30.0
 			var pts := _pts(entry, forward, right, [
@@ -151,6 +152,45 @@ static func _pts(entry: Vector3, fwd: Vector3, right: Vector3, offsets: Array) -
 		var p: Vector3 = entry + fwd * float(o[0]) + right * float(o[1]) + Vector3.UP * float(o[2])
 		p.y = maxf(p.y, MIN_HEIGHT)
 		out.append(TrackPoint.new(p))
+	return out
+
+
+## Turn or helix as a few points with Bezier handles: one point per quarter
+## turn (or less), each with SMOOTH handles that the player can drag to
+## reshape the curve. A cubic Bezier approximates a circular arc of angle phi
+## with handles 4/3 * tan(phi/4) * radius long. The handles at the ends of the
+## turn are lengthened by `EASE` so curvature builds up gradually (a softer
+## entry, like a transition spiral) instead of jumping from straight to full.
+const EASE := 1.6
+
+static func bezier_turn(entry: Vector3, fwd: Vector3, dir: float, radius: float, angle: float, drop: float) -> Array[TrackPoint]:
+	var out: Array[TrackPoint] = []
+	var lead := 6.0
+	var start := entry + fwd * lead
+	var center := start + fwd.cross(Vector3.UP).normalized() * (radius * dir)
+	var segs := maxi(1, ceili(angle / (PI * 0.5) - 0.01))
+	var phi := angle / float(segs)
+	var h := 4.0 / 3.0 * tan(phi / 4.0) * radius
+	var seg_drop := drop / float(segs)
+	for i in segs + 1:
+		var a := phi * float(i)
+		var heading := fwd.rotated(Vector3.UP, -a * dir)
+		var p := center + (start - center).rotated(Vector3.UP, -a * dir)
+		p.y = maxf(start.y - seg_drop * float(i), MIN_HEIGHT)
+		var tp := TrackPoint.new(p)
+		tp.handle_mode = TrackPoint.Handle.SMOOTH
+		var tangent := heading * h + Vector3.UP * (-seg_drop / 3.0)
+		var h_in := -tangent * (EASE if i == segs else 1.0)
+		var h_out := tangent * (EASE if i == 0 else 1.0)
+		if i == 0:
+			h_in = -heading * h * EASE
+		if i == segs:
+			h_out = heading * h * EASE
+		tp.handle_in = h_in
+		tp.handle_out = h_out
+		out.append(tp)
+	var last := out[out.size() - 1].position
+	out.append(TrackPoint.new(last + fwd.rotated(Vector3.UP, -angle * dir) * lead))
 	return out
 
 

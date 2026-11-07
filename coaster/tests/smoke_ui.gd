@@ -103,6 +103,40 @@ func _run() -> void:
 	main.back_to_editor()
 	check(main.hud.editor_ui.visible, "back in the editor")
 
+	# Multi-select: select three points and drag them together.
+	main.orbit_cam.focus(main.data.points[3].position, 70.0)
+	await _frames(40)
+	main.editor.select(3)
+	main.editor.toggle_select(4)
+	main.editor.toggle_select(5)
+	check(main.editor.selection.size() == 3, "three points selected")
+	var b3: Vector3 = main.data.points[3].position
+	var b5: Vector3 = main.data.points[5].position
+	var sc := cam.unproject_position(b3)
+	_mouse_button(main.editor, sc, true)
+	for i in 8:
+		_mouse_move(main.editor, sc + Vector2(10 * (i + 1), 0), Vector2(10, 0))
+	_mouse_button(main.editor, sc + Vector2(80, 0), false)
+	var d3: Vector3 = main.data.points[3].position - b3
+	var d5: Vector3 = main.data.points[5].position - b5
+	check(d3.length() > 1.0 and d3.distance_to(d5) < 0.01, "the group moves together (%.1f m)" % d3.length())
+	main.undo()
+	# Curve handle: drag the outgoing handle of one point.
+	main.editor.select(3)
+	await _frames(2)
+	var hp: PackedVector3Array = main.editor.handle_positions()
+	var hs := cam.unproject_position(hp[1])
+	_mouse_button(main.editor, hs, true)
+	for i in 6:
+		_mouse_move(main.editor, hs + Vector2(0, -12 * (i + 1)), Vector2(0, -12))
+	_mouse_button(main.editor, hs + Vector2(0, -72), false)
+	check(main.data.points[3].handle_mode == TrackPoint.Handle.SMOOTH, "dragging a handle makes the point Smooth")
+	var hh: PackedVector3Array = TrackSpline.current_handles(main.data.points, 3, true)
+	check(hh[0].normalized().dot(hh[1].normalized()) < -0.99, "Smooth keeps the handles opposite")
+	main.set_handle_mode(TrackPoint.Handle.AUTO)
+	check(main.data.points[3].handle_mode == TrackPoint.Handle.AUTO, "handles reset to Auto")
+	await _wait_analysis(main)
+
 	# --- Phase 2 --------------------------------------------------------------
 	# Coaster type switch (steel -> wooden is unlocked from the start).
 	main.set_coaster_type(CoasterTypes.Id.WOODEN)

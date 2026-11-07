@@ -28,6 +28,8 @@ var graph: TrackGraph
 var graph_toggle: Button
 var busy_label: Label
 var type_option: OptionButton
+var handle_option: OptionButton
+var multi_toggle: Button
 var launch_label: Label
 var launch_slider: HSlider
 var _tool_buttons: Array[Button] = []
@@ -284,7 +286,10 @@ func _build_editor_ui() -> void:
 	top.add_child(ride)
 
 	# --- Stats (top left) ------------------------------------------------------
-	var row := HBoxContainer.new()
+	# Stats on the left, point panel on the right; wraps to two lines when
+	# the screen is too narrow for both (portrait phones).
+	var row := HFlowContainer.new()
+	row.add_theme_constant_override("v_separation", 6)
 	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	top_v.add_child(row)
 	var sp := _panel(row)
@@ -350,6 +355,26 @@ func _build_editor_ui() -> void:
 	snap_toggle = _button("Snap", func(on: bool) -> void: main.set_snap(on), true)
 	snap_toggle.set_pressed_no_signal(true)
 	track_tools.append(snap_toggle)
+	multi_toggle = _button("Multi", func(on: bool) -> void: main.set_multi_select(on), true)
+	track_tools.append(multi_toggle)
+	track_tools.append(_button("All", func() -> void: main.select_all_points()))
+	# Spacing for + Point (how far the next point goes from the end).
+	var sp_box := HBoxContainer.new()
+	var sp_label := Label.new()
+	sp_label.text = "Spacing 15 m"
+	sp_label.custom_minimum_size = Vector2(118, 0)
+	sp_box.add_child(sp_label)
+	var sp_slider := HSlider.new()
+	sp_slider.min_value = 4
+	sp_slider.max_value = 50
+	sp_slider.step = 1
+	sp_slider.value = 15
+	sp_slider.custom_minimum_size = Vector2(110, 52)
+	sp_slider.value_changed.connect(func(v: float) -> void:
+		sp_label.text = "Spacing %d m" % int(v)
+		main.set_point_spacing(v))
+	sp_box.add_child(sp_slider)
+	track_tools.append(sp_box)
 
 	var terrain_tools: Array[Control] = []
 	var bgroup := ButtonGroup.new()
@@ -414,6 +439,15 @@ func _build_editor_ui() -> void:
 	segment_option.item_selected.connect(func(i: int) -> void:
 		if not _updating: main.set_segment(i))
 	v.add_child(segment_option)
+	handle_option = OptionButton.new()
+	handle_option.custom_minimum_size = Vector2(0, 48)
+	handle_option.focus_mode = Control.FOCUS_NONE
+	handle_option.get_popup().add_theme_font_size_override("font_size", 22)
+	for i in TrackPoint.HANDLE_NAMES.size():
+		handle_option.add_item("Curve: " + TrackPoint.HANDLE_NAMES[i], i)
+	handle_option.item_selected.connect(func(i: int) -> void:
+		if not _updating: main.set_handle_mode(i))
+	v.add_child(handle_option)
 	auto_bank_check = CheckButton.new()
 	auto_bank_check.text = "Auto-bank"
 	auto_bank_check.focus_mode = Control.FOCUS_NONE
@@ -499,8 +533,10 @@ func refresh_point(data: TrackData, index: int, spline: TrackSpline, record: Rid
 		return
 	_updating = true
 	var p := data.points[index]
-	point_title.text = "Point %d of %d" % [index + 1, data.points.size()]
+	var count: int = main.editor.selection.size()
+	point_title.text = ("%d points selected" % count) if count > 1 else ("Point %d of %d" % [index + 1, data.points.size()])
 	segment_option.select(p.segment)
+	handle_option.select(p.handle_mode)
 	auto_bank_check.button_pressed = p.auto_bank
 	var launch := p.segment == TrackPoint.Segment.LAUNCH
 	launch_label.visible = launch

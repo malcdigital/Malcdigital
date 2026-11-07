@@ -82,23 +82,12 @@ func bake(data: TrackData, spacing: float = DEFAULT_SPACING) -> bool:
 	var prev := data.points[0].position
 	var segs := n if closed else n - 1
 	for i in segs:
-		var p1 := data.points[i].position
-		var p2 := data.points[(i + 1) % n].position
-		var p0: Vector3
-		var p3: Vector3
-		if closed:
-			p0 = data.points[(i - 1 + n) % n].position
-			p3 = data.points[(i + 2) % n].position
-		else:
-			# Open ends: mirror the neighbour so the curve leaves straight.
-			p0 = data.points[i - 1].position if i > 0 else p1 * 2.0 - p2
-			p3 = data.points[i + 2].position if i + 2 < n else p2 * 2.0 - p1
-		var knots := _centripetal_knots(p0, p1, p2, p3)
-		var steps := clampi(ceili(p1.distance_to(p2) / 0.2), 12, 2000)
+		var c := segment_controls(data.points, i, closed)
+		var steps := clampi(ceili((c[0].distance_to(c[1]) + c[1].distance_to(c[2]) + c[2].distance_to(c[3])) / 0.2), 12, 4000)
 		point_s[i] = acc
 		for k in steps:
 			var t := float(k) / float(steps)
-			var p := _catmull_rom(p0, p1, p2, p3, knots, t)
+			var p := bezier(c, t)
 			acc += p.distance_to(prev) if dense_p.size() > 0 else 0.0
 			prev = p
 			dense_p.append(p)
@@ -430,6 +419,74 @@ func nearest_s(world: Vector3) -> float:
 # -----------------------------------------------------------------------------
 # Math helpers
 # -----------------------------------------------------------------------------
+
+## Every segment between two control points is a cubic Bezier curve:
+##   P1 -> B1 -> B2 -> P2,   B1 = P1 + (P1's outgoing handle),
+##                           B2 = P2 + (P2's incoming handle).
+## A point with AUTO handles gets them from centripetal Catmull-Rom: the
+## Bezier with those handles is exactly the Catmull-Rom segment (a cubic in
+## t), so automatic tracks keep the overshoot-free shape described above.
+## Manual handles (SMOOTH / CORNER) let the player bend each segment freely.
+static func segment_controls(pts: Array[TrackPoint], i: int, is_closed: bool) -> PackedVector3Array:
+	var n := pts.size()
+	var a := pts[i]
+	var b := pts[(i + 1) % n]
+	var p1 := a.position
+	var p2 := b.position
+	var p0: Vector3
+	var p3: Vector3
+	if is_closed:
+		p0 = pts[(i - 1 + n) % n].position
+		p3 = pts[(i + 2) % n].position
+	else:
+		# Open ends: mirror the neighbour so the curve leaves straight.
+		p0 = pts[i - 1].position if i > 0 else p1 * 2.0 - p2
+		p3 = pts[i + 2].position if i + 2 < n else p2 * 2.0 - p1
+	var b1: Vector3
+	var b2: Vector3
+	if a.handle_mode == TrackPoint.Handle.AUTO or b.handle_mode == TrackPoint.Handle.AUTO:
+		var kn := _centripetal_knots(p0, p1, p2, p3)
+		var span := kn.z - kn.y
+		# Centripetal Catmull-Rom tangents at P1 and P2 (w.r.t. the knot
+		# parameter), scaled to the segment's local 0..1 parameter.
+		var m1 := (p1 - p0) / (kn.y - kn.x) - (p2 - p0) / (kn.z - kn.x) + (p2 - p1) / span
+		var m2 := (p2 - p1) / span - (p3 - p1) / (kn.w - kn.y) + (p3 - p2) / (kn.w - kn.z)
+		b1 = p1 + m1 * span / 3.0
+		b2 = p2 - m2 * span / 3.0
+	if a.handle_mode != TrackPoint.Handle.AUTO:
+		b1 = p1 + a.handle_out
+	if b.handle_mode != TrackPoint.Handle.AUTO:
+		b2 = p2 + b.handle_in
+	return PackedVector3Array([p1, b1, b2, p2])
+
+
+static func bezier(c: PackedVector3Array, t: float) -> Vector3:
+	var u := 1.0 - t
+	return c[0] * (u * u * u) + c[1] * (3.0 * u * u * t) + c[2] * (3.0 * u * t * t) + c[3] * (t * t * t)
+
+
+## The handles point `i` would have right now, as offsets [in, out]: its own
+## if set, otherwise the automatic ones. Used to show handles in the editor
+## and to start editing from the current shape.
+static func current_handles(pts: Array[TrackPoint], i: int, is_closed: bool) -> PackedVector3Array:
+	var n := pts.size()
+	var p := pts[i]
+	if p.handle_mode != TrackPoint.Handle.AUTO:
+		return PackedVector3Array([p.handle_in, p.handle_out])
+	var h_in := Vector3.ZERO
+	var h_out := Vector3.ZERO
+	if is_closed or i < n - 1:
+		var c := segment_controls(pts, i, is_closed)
+		h_out = c[1] - c[0]
+	if is_closed or i > 0:
+		var c := segment_controls(pts, (i - 1 + n) % n, is_closed)
+		h_in = c[2] - c[3]
+	if not is_closed and i == n - 1:
+		h_out = -h_in
+	if not is_closed and i == 0:
+		h_in = -h_out
+	return PackedVector3Array([h_in, h_out])
+
 
 ## Knot values for centripetal parameterisation: t_{i+1} = t_i + |P_{i+1}-P_i|^0.5
 static func _centripetal_knots(p0: Vector3, p1: Vector3, p2: Vector3, p3: Vector3) -> Vector4:

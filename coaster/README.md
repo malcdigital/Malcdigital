@@ -30,7 +30,11 @@ CI runs both on every push that touches `coaster/` (`.github/workflows/coaster.y
 | Select point | Click a handle | Tap a handle |
 | Move point across ground | Drag a handle | Drag a handle |
 | Move point up/down | Shift + drag, PgUp/PgDn | **Height mode** toggle, then drag; or **Up/Down 1 m** buttons |
-| Add point after selected | N / Insert | **+ Point** |
+| Add point after selected | N / Insert | **+ Point** (the **Spacing** slider sets how far from the end it goes) |
+| Select several points | Ctrl/Cmd + click | **Multi** toggle, then tap points (tap again to remove); **All** selects everything |
+| Move a group | Drag any selected point | Drag any selected point |
+| Shape the curve | Drag the cyan handles of the selected point (Alt + drag moves one handle only) | Drag the cyan handles |
+| Handle style | Point panel → Curve: Auto / Smooth / Corner | same |
 | Delete point | Delete / Backspace | **Delete** |
 | Undo / redo | Ctrl+Z / Ctrl+Y (or Ctrl+Shift+Z) | **Undo** / **Redo** |
 | Test ride | Space / Enter | **Test ride** |
@@ -38,6 +42,8 @@ CI runs both on every push that touches `coaster/` (`.github/workflows/coaster.y
 | Ride speed 1×/2×/4× | Tab | **Speed** button |
 | Look around (POV) | Drag | Drag |
 | Stop ride | Esc / Space | **Stop** |
+
+**Curve handles** work like Bezier handles in a drawing app or a video editor's curves. Every segment between two points is a cubic Bezier. **Auto** points get smooth handles automatically, the same shape as before. Drag a handle and the point becomes **Smooth**: the opposite handle mirrors its direction so the track stays smooth. **Corner** lets each handle move freely. Turns and helixes are now built as a few points with handles (one per quarter turn), so you can reshape a turn by dragging its handles.
 
 Big handles are control points you place. Small dots are the inner points of generated elements; you can drag them too. Handle colour shows the segment type: white is normal, blue is chain lift, pink is launch, orange is brakes, green is station.
 

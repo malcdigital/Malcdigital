@@ -20,7 +20,11 @@ static func starter() -> TrackData:
 	_append(pts, Elements.Kind.DROP, 4.5)
 	_append(pts, Elements.Kind.HILL, 24.0)
 	_append(pts, Elements.Kind.STRAIGHT, 23.0)
-	_append(pts, Elements.Kind.UTURN_RIGHT, 22.0)
+	# Transition-spiral U-turn (dense points) keeps the starter's tuned forces.
+	var ua := pts[pts.size() - 2].position
+	var ub := pts[pts.size() - 1].position
+	var uf := Vector3(ub.x - ua.x, 0.0, ub.z - ua.z).normalized()
+	pts.append_array(Elements.turn(ub, uf, 1.0, clampf(22.0 * 22.0 / (9.81 * 1.5), 10.0, 35.0), PI, 0.0))
 	_append(pts, Elements.Kind.LOOP, 21.0)
 	_append(pts, Elements.Kind.HILL, 18.0)
 

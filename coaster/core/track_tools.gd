@@ -45,7 +45,8 @@ static func add_point_after(data: TrackData, index: int, spline: TrackSpline) ->
 
 
 static func remove_point(data: TrackData, index: int) -> bool:
-	if data.points.size() <= 4 or index < 0 or index >= data.points.size():
+	var min_points := 2 if data.open else 4
+	if data.points.size() <= min_points or index < 0 or index >= data.points.size():
 		return false
 	data.points.remove_at(index)
 	return true

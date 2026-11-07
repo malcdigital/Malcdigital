@@ -29,6 +29,8 @@ var _last_terrain_draw := 0
 var _train_type := -1
 var _splashes_seen := 0
 var _terrain_key := -1
+## How far + Point places a new point from the end of an unfinished track (m).
+var point_spacing := 15.0
 var editor: TrackEditor
 var orbit_cam: OrbitCamera
 var ride_cam: RideCamera
@@ -267,7 +269,7 @@ func add_point() -> void:
 		var a := data.points[i - 1].position
 		var b := data.points[i].position
 		var dir := (b - a).normalized() if a.distance_to(b) > 0.01 else Vector3.FORWARD
-		var p := TrackPoint.new(b + dir * 15.0, TrackPoint.Segment.NORMAL)
+		var p := TrackPoint.new(b + dir * point_spacing, TrackPoint.Segment.NORMAL)
 		if data.points[i].segment != TrackPoint.Segment.STATION:
 			p.segment = data.points[i].segment
 		data.points.append(p)
@@ -287,11 +289,22 @@ func delete_point() -> void:
 	if data.points.size() <= (2 if data.open else 4):
 		hud.toast("A track needs at least 4 points")
 		return
+	# Delete every selected point (highest index first so indices stay valid).
+	var doomed: Array[int] = editor.selection.duplicate()
+	doomed.sort()
+	doomed.reverse()
+	if data.open:
+		doomed = doomed.filter(func(i: int) -> bool: return i > 1)
+	var keep := (2 if data.open else 4)
+	if data.points.size() - doomed.size() < keep:
+		hud.toast("A track needs at least %d points" % keep)
+		return
 	_begin_edit()
-	var i := editor.selected
-	TrackTools.remove_point(data, i)
+	var first: int = doomed.back() if not doomed.is_empty() else editor.selected
+	for i in doomed:
+		TrackTools.remove_point(data, i)
 	_after_edit(true)
-	editor.select(mini(i, data.points.size() - 1))
+	editor.select(mini(first, data.points.size() - 1))
 
 
 func insert_element(kind: int) -> void:
@@ -337,7 +350,8 @@ func set_segment(seg: int) -> void:
 		hud.refresh_point(data, editor.selected, _current_spline(), analysis.record if analysis else null)
 		return
 	_begin_edit()
-	data.points[editor.selected].segment = seg
+	for i in editor.selection:
+		data.points[i].segment = seg
 	_after_edit()
 
 
@@ -345,12 +359,13 @@ func set_auto_bank(on: bool) -> void:
 	if editor.selected < 0:
 		return
 	_begin_edit()
-	var p := data.points[editor.selected]
-	p.auto_bank = on
-	if not on and analysis != null and analysis.valid and _current_spline() != null:
-		# Start manual banking from what auto-bank was doing.
-		var sp := _current_spline()
-		p.bank_deg = snappedf(rad_to_deg(sp.rolls[sp.index_at(sp.point_s[editor.selected])]), 5.0)
+	var sp := _current_spline()
+	for i in editor.selection:
+		var p := data.points[i]
+		p.auto_bank = on
+		if not on and sp != null:
+			# Start manual banking from what auto-bank was doing.
+			p.bank_deg = snappedf(rad_to_deg(sp.rolls[sp.index_at(sp.point_s[i])]), 5.0)
 	_after_edit()
 
 
@@ -361,8 +376,37 @@ func set_bank(deg: float) -> void:
 	if not _bank_edit_open:
 		_begin_edit()
 		_bank_edit_open = true
-	data.points[editor.selected].bank_deg = deg
+	for i in editor.selection:
+		data.points[i].bank_deg = deg
 	request_analysis()
+
+
+## Curve handle mode for the selected points (Auto / Smooth / Corner).
+func set_handle_mode(mode: int) -> void:
+	if editor.selected < 0:
+		return
+	_begin_edit()
+	for i in editor.selection:
+		var p := data.points[i]
+		if mode != TrackPoint.Handle.AUTO and p.handle_mode == TrackPoint.Handle.AUTO:
+			var cur := TrackSpline.current_handles(data.points, i, not data.open)
+			p.handle_in = cur[0]
+			p.handle_out = cur[1]
+		p.handle_mode = mode
+	_after_edit()
+
+
+func set_point_spacing(m: float) -> void:
+	point_spacing = m
+
+
+func set_multi_select(on: bool) -> void:
+	editor.multi_mode = on
+	hud.toast("Multi-select on: tap points to add or remove them, drag any of them to move them all" if on else "Multi-select off", 3.5)
+
+
+func select_all_points() -> void:
+	editor.select_all()
 
 
 func set_launch_speed(v: float) -> void:
