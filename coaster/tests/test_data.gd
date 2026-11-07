@@ -62,3 +62,21 @@ func test_elements_stay_above_ground() -> void:
 	for kind in Elements.NAMES.keys():
 		for p in Elements.build(kind, Vector3(0, 2, 0), Vector3.FORWARD, 20.0):
 			runner.check(p.position.y >= Elements.MIN_HEIGHT - 1e-4, "%s above ground" % Elements.NAMES[kind])
+
+
+func test_empty_track_is_open_until_it_returns() -> void:
+	var t := DefaultTracks.empty()
+	runner.check(t.open and t.points.size() == 2, "empty track is just the station")
+	runner.check(not t.is_valid(), "not rideable yet")
+	var a := TrackAnalyzer.analyze(t)
+	runner.check(a.open and a.spline.count > 10, "open track is baked for drawing")
+	runner.near(a.spline.length, 24.0, 0.5, "open spline length is the platform")
+	runner.check(a.record == null, "no ride simulated")
+	t.points.append(TrackPoint.new(Vector3(0, 1, -50)))
+	t.points.append(TrackPoint.new(Vector3(30, 1, -50)))
+	runner.check(not t.ready_to_close(), "far from the station: still open")
+	t.points.append(TrackPoint.new(Vector3(20, 1, 15)))
+	t.points.append(TrackPoint.new(Vector3(5, 1, 10)))
+	runner.check(t.ready_to_close(), "end near the station: ready to close")
+	var back := TrackData.from_dict(JSON.parse_string(JSON.stringify(t.to_dict())))
+	runner.check(back.open, "open flag saved")

@@ -136,7 +136,9 @@ func refresh_handles() -> void:
 		var h := _handles[i]
 		h.position = p.position
 		var sel := i == selected
-		h.material_override = _selected_mat if sel else _materials[p.segment]
+		var mat: Material = _selected_mat if sel else _materials[p.segment]
+		if h.material_override != mat:
+			h.material_override = mat
 		# Handles grow with camera distance so they stay tappable.
 		var d := camera.global_position.distance_to(p.position) if camera else 50.0
 		# Roughly constant size on screen so handles stay tappable when far away.
@@ -147,7 +149,8 @@ func refresh_handles() -> void:
 		st.visible = tool == Tool.TRACK and (sel or p.position.y > 2.0)
 		st.position = Vector3(p.position.x, p.position.y * 0.5, p.position.z)
 		st.scale = Vector3(s, maxf(p.position.y, 0.01), s)
-		st.material_override = h.material_override
+		if st.material_override != mat:
+			st.material_override = mat
 
 
 var _last_cam := Transform3D()
@@ -249,6 +252,50 @@ func _unhandled_input(event: InputEvent) -> void:
 		if _dragging_point and selected >= 0:
 			_drag_point(event.position)
 		get_viewport().set_input_as_handled()
+
+
+var _preview: MeshInstance3D
+var _preview_mesh: ImmediateMesh
+
+
+## A quick outline of the track through its control points, drawn while
+## dragging when full re-analysis is deferred (web build). Uniform
+## Catmull-Rom, a few steps per segment: costs almost nothing.
+func show_preview() -> void:
+	if _preview == null:
+		_preview_mesh = ImmediateMesh.new()
+		_preview = MeshInstance3D.new()
+		_preview.mesh = _preview_mesh
+		var m := _flat(Color(1.0, 0.9, 0.3), 1.0)
+		m.no_depth_test = true
+		_preview.material_override = m
+		_preview.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		add_child(_preview)
+	var pts := data.points
+	var n := pts.size()
+	_preview_mesh.clear_surfaces()
+	if n < 2:
+		return
+	var segs := n - 1 if data.open else n
+	_preview_mesh.surface_begin(Mesh.PRIMITIVE_LINE_STRIP)
+	for i in segs:
+		var p1 := pts[i].position
+		var p2 := pts[(i + 1) % n].position
+		var p0 := pts[(i - 1 + n) % n].position if (i > 0 or not data.open) else p1 * 2.0 - p2
+		var p3 := pts[(i + 2) % n].position if (i + 2 < n or not data.open) else p2 * 2.0 - p1
+		for k in 8:
+			var t := float(k) / 8.0
+			var t2 := t * t
+			var t3 := t2 * t
+			_preview_mesh.surface_add_vertex(0.5 * ((2.0 * p1) + (-p0 + p2) * t + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t2 + (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * t3))
+	_preview_mesh.surface_add_vertex(pts[segs % n].position)
+	_preview_mesh.surface_end()
+	_preview.visible = true
+
+
+func hide_preview() -> void:
+	if _preview != null:
+		_preview.visible = false
 
 
 func set_tool(t: int) -> void:

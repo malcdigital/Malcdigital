@@ -83,22 +83,16 @@ static func blank(type_id: int = CoasterTypes.Id.STEEL) -> TrackData:
 	return t
 
 
-## An empty track to build from scratch: just the station and a flat loop
-## back into it (driven by brake-run tyres, so the train always gets home).
-## Select the end of the platform and add elements from there.
+## An empty track to build from scratch: nothing but the station platform.
+## The track stays "open" (unfinished, not rideable) until the player brings
+## its end back to the start of the station.
 static func empty(type_id: int = CoasterTypes.Id.STEEL) -> TrackData:
 	var t := TrackData.new()
 	t.name = "My coaster"
-	var P := TrackPoint.Segment
+	t.open = true
 	t.points = [
-		TrackPoint.new(Vector3(0, 1, 0), P.STATION),
-		TrackPoint.new(Vector3(0, 1, -24), P.STATION),
-		TrackPoint.new(Vector3(0, 1, -34), P.BRAKE),
-		TrackPoint.new(Vector3(9, 1, -43), P.BRAKE),
-		TrackPoint.new(Vector3(18, 1, -34), P.BRAKE),
-		TrackPoint.new(Vector3(18, 1, 6), P.BRAKE),
-		TrackPoint.new(Vector3(9, 1, 15), P.BRAKE),
-		TrackPoint.new(Vector3(0, 1, 8), P.STATION),
+		TrackPoint.new(Vector3(0, 1, 0), TrackPoint.Segment.STATION),
+		TrackPoint.new(Vector3(0, 1, -24), TrackPoint.Segment.STATION),
 	] as Array[TrackPoint]
 	t.set_type(type_id)
 	return t

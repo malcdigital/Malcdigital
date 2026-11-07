@@ -28,6 +28,7 @@ var prop_kind := Props.Kind.TREE   # -1 = remove
 var _last_terrain_draw := 0
 var _train_type := -1
 var _splashes_seen := 0
+var _terrain_key := -1
 var editor: TrackEditor
 var orbit_cam: OrbitCamera
 var ride_cam: RideCamera
@@ -66,6 +67,13 @@ func _ready() -> void:
 	editor.selection_changed.connect(func(_i: int) -> void: _refresh_point())
 	editor.edit_started.connect(_begin_edit)
 	editor.points_moved.connect(func(live: bool) -> void:
+		if live and not _threaded:
+			# No threads (web): don't re-analyse on every drag step, which would
+			# keep the game busy. Show a quick outline; analyse on release.
+			editor.show_preview()
+			return
+		if not live:
+			_maybe_close()
 		request_analysis()
 		if not live: _refresh_point())
 	editor.ground_stroke.connect(_on_ground_stroke)
@@ -75,6 +83,7 @@ func _ready() -> void:
 	hud.setup(self)
 	_set_track(DefaultTracks.empty())
 	editor.select(1)   # end of the platform: elements get added from here
+	hud.toast("Just a station. Select its end and use Add element or + Point to build, then bring the track back here.", 5.0)
 	hud.refresh_type(data, progress)
 
 
@@ -94,7 +103,7 @@ func _exit_tree() -> void:
 # -----------------------------------------------------------------------------
 
 ## Per-frame analysis budget when there are no threads (microseconds).
-const SLICE_BUDGET_USEC := 5000
+const SLICE_BUDGET_USEC := 8000
 
 var _threaded := not OS.has_feature("web") and OS.get_environment("COASTER_NO_THREADS") == ""
 var _job: AnalysisJob
@@ -125,6 +134,7 @@ func _process(dt: float) -> void:
 func _start_job() -> void:
 	_dirty = false
 	_job = AnalysisJob.new(data.copy(), overlay_mode, true)
+	_job.skip_terrain_key = _terrain_key
 	if _threaded:
 		_job_id = WorkerThreadPool.add_task(_job.run.bind(1 << 62), false, "Analyse coaster")
 
@@ -139,13 +149,27 @@ func _apply_job() -> void:
 	var a := job.result
 	analysis = a
 	analysis_data = job.data
-	terrain_view.show_terrain(job.data.terrain, job.terrain_arrays if not job.terrain_arrays.is_empty()
-		else TerrainMeshBuilder.build_arrays(job.data.terrain, job.data.terrain.heights, Contracts.zones(job.data.contract_id)))
+	editor.hide_preview()
+	if not job.terrain_unchanged:
+		if job.terrain_arrays.is_empty():
+			terrain_view.show_raw(job.data.terrain, Contracts.zones(job.data.contract_id))
+			_terrain_key = -1
+		else:
+			terrain_view.show_terrain(job.data.terrain, job.terrain_arrays)
+			_terrain_key = job.terrain_key
 	terrain_view.show_props(job.data.terrain, job.data.props)
 	contract_result = {}
 	if a.valid and job.data.contract_id != "":
 		contract_result = ContractEvaluator.evaluate(Contracts.find(job.data.contract_id), job.data, a)
-	if a.valid:
+	if a.open:
+		track_view.show_track(a.spline, job.chunks, a.site, job.data.type_info())
+		editor.show_problems([] as Array[Dictionary], null)
+		if mode != Mode.RIDE:
+			_park_train()
+		if not _framed_once:
+			_framed_once = true
+			frame_track()
+	elif a.valid:
 		track_view.show_track(a.spline, job.chunks, a.site, job.data.type_info())
 		editor.show_problems(a.ratings.problems, a.spline)
 		if mode != Mode.RIDE:
@@ -187,6 +211,7 @@ func _begin_edit() -> void:
 
 
 func _after_edit(rebuild_handles: bool = false) -> void:
+	_maybe_close()
 	if rebuild_handles:
 		editor.set_data(data)
 	else:
@@ -227,10 +252,27 @@ func _selected_or_last() -> int:
 	return editor.selected if editor.selected >= 0 else data.points.size() - 1
 
 
+## An unfinished track closes itself once its end comes back to the station.
+func _maybe_close() -> void:
+	if data.ready_to_close():
+		data.open = false
+		hud.toast("Circuit complete! The track now joins the station. Press Test ride.", 4.0)
+
+
 func add_point() -> void:
 	var i := _selected_or_last()
 	_begin_edit()
-	TrackTools.add_point_after(data, i, _current_spline())
+	if data.open and i == data.points.size() - 1:
+		# Extend the unfinished track straight on from its end.
+		var a := data.points[i - 1].position
+		var b := data.points[i].position
+		var dir := (b - a).normalized() if a.distance_to(b) > 0.01 else Vector3.FORWARD
+		var p := TrackPoint.new(b + dir * 15.0, TrackPoint.Segment.NORMAL)
+		if data.points[i].segment != TrackPoint.Segment.STATION:
+			p.segment = data.points[i].segment
+		data.points.append(p)
+	else:
+		TrackTools.add_point_after(data, i, _current_spline())
 	_after_edit(true)
 	editor.select(i + 1)
 
@@ -239,7 +281,10 @@ func delete_point() -> void:
 	if editor.selected < 0:
 		hud.toast("Select a point first")
 		return
-	if data.points.size() <= 4:
+	if editor.selected <= 1 and data.open:
+		hud.toast("The station platform stays. Build out from its end.")
+		return
+	if data.points.size() <= (2 if data.open else 4):
 		hud.toast("A track needs at least 4 points")
 		return
 	_begin_edit()
@@ -256,7 +301,13 @@ func insert_element(kind: int) -> void:
 	var heading := Vector3.FORWARD
 	if sp != null:
 		heading = TrackTools.heading_at(sp, i)
-		speed = absf(analysis.record.sample_speed[sp.index_at(sp.point_s[i])])
+		if analysis.record != null:
+			speed = absf(analysis.record.sample_speed[sp.index_at(sp.point_s[i])])
+		elif data.open:
+			speed = 3.0   # leaving the station slowly
+	elif i > 0:
+		var d := data.points[i].position - data.points[i - 1].position
+		heading = d.normalized() if d.length() > 0.01 else Vector3.FORWARD
 	var ctx := {"water_level": data.terrain.water_level, "seat_offset": data.type_info()["seat_offset"]}
 	if kind == Elements.Kind.LAUNCH and not data.type_info()["launch"]:
 		hud.toast("Only launched coasters have launch motors")
@@ -346,7 +397,9 @@ func set_overlay(mode_i: int) -> void:
 
 
 func _current_spline() -> TrackSpline:
-	if analysis == null or not analysis.valid or analysis_data == null:
+	if analysis == null or analysis.spline == null or analysis.spline.count == 0 or analysis_data == null:
+		return null
+	if not analysis.valid and not analysis.open:
 		return null
 	if analysis_data.points.size() != data.points.size():
 		return null
@@ -413,6 +466,7 @@ func _on_ground_stroke(phase: int, point: Vector3) -> void:
 		_flatten_to = data.terrain.height_at(point.x, point.z)
 	elif phase == TrackEditor.Stroke.END:
 		terrain_view.show_raw(data.terrain, Contracts.zones(data.contract_id))
+		_terrain_key = -1
 		_after_edit()
 
 
@@ -430,6 +484,7 @@ func _sculpt(dt: float) -> void:
 	if now - _last_terrain_draw > 180:
 		_last_terrain_draw = now
 		terrain_view.show_raw(data.terrain, Contracts.zones(data.contract_id))
+		_terrain_key = -1
 
 
 func _on_ground_tap(point: Vector3) -> void:
@@ -466,11 +521,12 @@ func start_contract(id: String) -> void:
 	if not progress.is_available(i):
 		hud.toast("Finish the previous contract first")
 		return
-	var d := DefaultTracks.blank(c["type"])
+	var d := DefaultTracks.empty(c["type"])
 	d.name = c["title"]
 	d.terrain = TerrainData.make(c["terrain"])
 	d.contract_id = id
 	_set_track(d)
+	editor.select(1)
 	set_tool(TrackEditor.Tool.TRACK)
 	hud.refresh_type(data, progress)
 	hud.show_brief(c)
@@ -502,7 +558,7 @@ func frame_track() -> void:
 	var aabb := AABB(data.points[0].position, Vector3.ZERO)
 	for p in data.points:
 		aabb = aabb.expand(p.position)
-	orbit_cam.focus(aabb.get_center(), clampf(aabb.size.length() * 0.62, 30.0, 800.0))
+	orbit_cam.focus(aabb.get_center(), clampf(aabb.size.length() * 0.62, 70.0, 800.0))
 
 
 func focus_selected() -> void:
@@ -531,7 +587,7 @@ func new_empty_track() -> void:
 	_set_track(d)
 	editor.select(1)
 	hud.refresh_type(data, progress)
-	hud.toast("Empty track. The end of the platform is selected: use Add element to build from it.", 4.0)
+	hud.toast("Just a station. Use Add element or + Point from its end, then bring the track back to the start of the station.", 5.0)
 
 
 func new_track(blank: bool) -> void:
@@ -571,6 +627,9 @@ func delete_saved(file: String) -> void:
 # -----------------------------------------------------------------------------
 
 func start_ride() -> void:
+	if data.open or (analysis != null and analysis.open):
+		hud.toast("Finish the circuit first: bring the end of the track back to the green handle at the start of the station.", 4.5)
+		return
 	if analysis == null or not analysis.valid:
 		hud.toast("The track needs at least 4 points")
 		return

@@ -29,7 +29,9 @@ const LODS := [
 static func chunk_count(spline: TrackSpline) -> int:
 	if spline == null or spline.count == 0:
 		return 0
-	return ceili(float(spline.count) / CHUNK_SAMPLES)
+	# An open track has no segment from its last sample back to the first.
+	var spans := spline.count if spline.closed else spline.count - 1
+	return ceili(float(spans) / CHUNK_SAMPLES)
 
 
 ## One chunk at every LOD: an Array (per LOD) of surface dictionaries
@@ -41,7 +43,7 @@ static func build_chunk(spline: TrackSpline, spine_colors: PackedColorArray, ind
 	if ty.is_empty():
 		ty = CoasterTypes.get_type(CoasterTypes.Id.STEEL)
 	var start := index * CHUNK_SAMPLES
-	var end := mini(start + CHUNK_SAMPLES, spline.count)   # inclusive end sample (wraps at count)
+	var end := mini(start + CHUNK_SAMPLES, spline.count if spline.closed else spline.count - 1)   # inclusive end sample
 	var lods := []
 	for lod in LODS:
 		lods.append(_build_chunk(spline, spine_colors, start, end, lod, ty, env))
@@ -122,7 +124,10 @@ static func _build_chunk(sp: TrackSpline, colors: PackedColorArray, k0: int, k1:
 	var every: int = lod["tie_every"]
 	if wood:
 		every = maxi(1, every / 2)
+	# Ties are instances of one unit box (a MultiMesh), so building them is just
+	# writing transforms: far cheaper than generating their vertices.
 	var first_tie := k0 + posmod(-k0, every)
+	var ties := PackedFloat32Array()
 	for kk in range(first_tie, k1, every):
 		var p := sp.positions[kk]
 		var t := sp.tangents[kk]
@@ -130,13 +135,18 @@ static func _build_chunk(sp: TrackSpline, colors: PackedColorArray, k0: int, k1:
 		var r := sp.rights[kk]
 		if wood:
 			var col := colors[kk] if kk < colors.size() else tie_col
-			var c := p + u * ((HEART_TO_RAIL + 0.18) * dir)
-			steel.box(c, r * 0.95, u * 0.09, t * 0.11, col.lerp(tie_col, 0.35))
+			_instance(ties, p + u * ((HEART_TO_RAIL + 0.18) * dir), r * 1.9, u * 0.18, t * 0.22, col.lerp(tie_col, 0.35))
 		else:
 			var c := p + u * ((HEART_TO_RAIL + 0.09) * dir)
-			steel.box(c, r * (GAUGE_HALF + 0.02), u * 0.05, t * 0.07, tie_col)
-			steel.box(c + u * (SPINE_DROP * 0.5 * dir), r * 0.05, u * (SPINE_DROP * 0.5), t * 0.06, tie_col)
-	return {"steel": steel.arrays(), "spine": spine.arrays(), "tunnel": tunnel.arrays()}
+			_instance(ties, c, r * (GAUGE_HALF * 2.0 + 0.04), u * 0.1, t * 0.14, tie_col)
+			_instance(ties, c + u * (SPINE_DROP * 0.5 * dir), r * 0.1, u * SPINE_DROP, t * 0.12, tie_col)
+	return {"steel": steel.arrays(), "spine": spine.arrays(), "tunnel": tunnel.arrays(), "ties": ties}
+
+
+## Append one MultiMesh instance (3x4 transform, row-major, then a colour) for
+## a unit box scaled to full extents x, y, z and centred on c.
+static func _instance(buf: PackedFloat32Array, c: Vector3, x: Vector3, y: Vector3, z: Vector3, col: Color) -> void:
+	buf.append_array(PackedFloat32Array([x.x, y.x, z.x, c.x, x.y, y.y, z.y, c.y, x.z, y.z, z.z, c.z, col.r, col.g, col.b, col.a]))
 
 
 static func to_mesh(surfaces: Dictionary, steel_mat: Material, spine_mat: Material, tunnel_mat: Material = null) -> ArrayMesh:

@@ -33,6 +33,30 @@ func _run() -> void:
 	var main: Node = load("res://main.tscn").instantiate()
 	root.add_child(main)
 	await _wait_analysis(main)
+	check(main.data.open and main.data.points.size() == 2, "the game starts with just a station")
+	check(main.analysis != null and main.analysis.open, "the station is drawn as an unfinished track")
+
+	# Build from scratch: extend, add an element, try to ride, then close.
+	main.add_point()
+	check(main.data.points.size() == 3, "+ Point extends from the end of the station")
+	main.insert_element(Elements.Kind.LIFT_HILL)
+	check(main.data.points.size() > 3 and main.data.open, "elements build on the open end")
+	await _wait_analysis(main)
+	main.start_ride()
+	check(main.mode == main.Mode.EDIT, "an unfinished track can't be ridden")
+	main.insert_element(Elements.Kind.UTURN_RIGHT)
+	var last: Vector3 = main.data.points[main.data.points.size() - 1].position
+	main.editor.select(main.data.points.size() - 1)
+	main._begin_edit()
+	main.data.points.append(TrackPoint.new(Vector3(last.x, 1, 10), TrackPoint.Segment.BRAKE))
+	main.data.points.append(TrackPoint.new(Vector3(0, 1, 8), TrackPoint.Segment.BRAKE))
+	main._after_edit(true)
+	check(not main.data.open, "bringing the end back to the station closes the circuit")
+	await _wait_analysis(main)
+	check(main.analysis.valid, "closed track is analysed for a ride")
+
+	main.new_track(false)
+	await _wait_analysis(main)
 	check(main.analysis != null and main.analysis.valid, "starter coaster analysed")
 
 	# Drag point 3 (top of the lift) sideways with synthetic mouse events.
@@ -121,7 +145,7 @@ func _run() -> void:
 	main.start_contract("first_steps")
 	await _wait_analysis(main)
 	check(main.data.contract_id == "first_steps", "contract started")
-	check(not main.contract_result.is_empty() and main.contract_result["goals"].size() > 3, "contract goals evaluated live")
+	check(main.data.open, "contracts start from just the station")
 	main.hud.brief_panel.visible = false
 	main.leave_contract()
 	await _wait_analysis(main)

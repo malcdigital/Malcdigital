@@ -28,6 +28,8 @@ func _shot(name: String) -> void:
 func _run() -> void:
 	var main: Node = load("res://main.tscn").instantiate()
 	root.add_child(main)
+	await _frames(30)
+	main.new_track(false)   # the game starts empty; show the starter coaster
 	await _frames(90)
 	await _shot("01_editor")
 	main.editor.select(30)

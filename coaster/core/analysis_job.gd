@@ -28,6 +28,11 @@ var result := TrackAnalyzer.new()
 var chunks := []
 ## Terrain mesh arrays with cuttings dug out (built with the track meshes).
 var terrain_arrays := []
+## Fingerprint of the terrain as drawn; when it matches `skip_terrain_key`
+## (what is already on screen) the terrain mesh is not rebuilt.
+var terrain_key := 0
+var skip_terrain_key := -1
+var terrain_unchanged := false
 var stage: int = Stage.BAKE
 
 var _sim: TrainSim
@@ -59,6 +64,17 @@ func _advance(t0: int, budget: int) -> void:
 	match stage:
 		Stage.BAKE:
 			result.spline = TrackSpline.new()
+			if data.open:
+				# Unfinished track: draw it (with supports and cost) but don't ride it.
+				if data.points.size() < 2 or not result.spline.bake(data):
+					stage = Stage.DONE
+					return
+				result.open = true
+				result.spline.apply_banking(data, PackedFloat32Array())
+				result.site = SiteAnalysis.new()
+				result.site.classify(result.spline, data)
+				stage = Stage.SITE
+				return
 			if not data.is_valid() or not result.spline.bake(data):
 				stage = Stage.DONE
 				return
@@ -66,12 +82,14 @@ func _advance(t0: int, budget: int) -> void:
 			result.site.classify(result.spline, data)
 			_sim = TrainSim.new()
 			_sim.setup(result.spline, data, true, SPEED_PASS_DT)
+			_sim.fast = true
 			stage = Stage.SPEED_PASS
 		Stage.SPEED_PASS:
 			if _run_sim(t0, budget):
 				_sim.finalize()
 				result.spline.apply_banking(data, _sim.record.sample_speed)
 				_sim.setup(result.spline, data, true, TrainSim.PREVIEW_DT)
+				_sim.fast = false
 				stage = Stage.FORCE_PASS
 		Stage.FORCE_PASS:
 			if _run_sim(t0, budget):
@@ -82,7 +100,8 @@ func _advance(t0: int, budget: int) -> void:
 			result.site.build(result.spline, data, result.record, Contracts.zones(data.contract_id))
 			stage = Stage.SCORE
 		Stage.SCORE:
-			result.ratings = RideScorer.score(result.record, result.spline, data, result.site)
+			if not result.open:
+				result.ratings = RideScorer.score(result.record, result.spline, data, result.site)
 			var c := CostModel.estimate(data, result.spline, result.site)
 			result.cost = c["total"]
 			result.cost_parts.assign(c["parts"])
@@ -90,9 +109,9 @@ func _advance(t0: int, budget: int) -> void:
 			for k in result.spline.count:
 				h = maxf(h, result.spline.positions[k].y - result.site.ground[k])
 			result.max_height_above_ground = h
-			result.valid = true
+			result.valid = not result.open
 			if build_meshes:
-				_colors = TrackOverlay.colors(overlay_mode, result.spline, result.record, float(data.type_info()["g_scale"]), data.type_info()["spine"])
+				_colors = TrackOverlay.colors(overlay_mode if not result.open else TrackOverlay.Mode.PAINT, result.spline, result.record, float(data.type_info()["g_scale"]), data.type_info()["spine"])
 				stage = Stage.MESH
 			else:
 				stage = Stage.DONE
@@ -103,7 +122,11 @@ func _advance(t0: int, budget: int) -> void:
 			else:
 				stage = Stage.TERRAIN
 		Stage.TERRAIN:
-			terrain_arrays = TerrainMeshBuilder.build_arrays(data.terrain, result.site.render_heights, Contracts.zones(data.contract_id))
+			terrain_key = hash(result.site.render_heights) ^ hash(data.terrain.water_level) ^ data.contract_id.hash()
+			if terrain_key == skip_terrain_key:
+				terrain_unchanged = true
+			else:
+				terrain_arrays = TerrainMeshBuilder.build_arrays(data.terrain, result.site.render_heights, Contracts.zones(data.contract_id))
 			stage = Stage.DONE
 
 

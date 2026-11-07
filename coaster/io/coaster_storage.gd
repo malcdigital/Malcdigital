@@ -68,4 +68,4 @@ static func _read(path: String) -> TrackData:
 	if not (parsed is Dictionary):
 		return null
 	var t := TrackData.from_dict(parsed)
-	return t if t.is_valid() else null
+	return t if t.points.size() >= 2 else null

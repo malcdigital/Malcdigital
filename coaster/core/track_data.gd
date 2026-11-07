@@ -13,6 +13,12 @@ var terrain := TerrainData.new()
 var props: Array[Dictionary] = []
 ## Contract this coaster is being built for ("" = sandbox).
 var contract_id := ""
+## True while the track is unfinished: it starts at the station and has not
+## been brought back to it yet. Open tracks can be built but not ridden.
+var open := false
+
+## Bringing the last point this close to the station start closes the circuit.
+const CLOSE_DISTANCE := 15.0
 
 # --- Train -------------------------------------------------------------------
 var num_cars := 5
@@ -45,6 +51,7 @@ func copy() -> TrackData:
 	for pr in props:
 		t.props.append(pr.duplicate())
 	t.contract_id = contract_id
+	t.open = open
 	t.num_cars = num_cars
 	t.car_spacing = car_spacing
 	t.lift_speed = lift_speed
@@ -92,6 +99,7 @@ func to_dict() -> Dictionary:
 		"terrain": terrain.to_dict(),
 		"props": props,
 		"contract": contract_id,
+		"open": open,
 	}
 
 
@@ -121,11 +129,17 @@ static func from_dict(d: Dictionary) -> TrackData:
 		if pr is Dictionary:
 			t.props.append({"k": int(pr.get("k", 0)), "x": float(pr.get("x", 0)), "z": float(pr.get("z", 0)), "s": float(pr.get("s", 1))})
 	t.contract_id = str(d.get("contract", ""))
+	t.open = bool(d.get("open", false))
 	return t
 
 
 func is_valid() -> bool:
-	return points.size() >= 4
+	return points.size() >= 4 and not open
+
+
+## True once an open track's last point has come back near the station start.
+func ready_to_close() -> bool:
+	return open and points.size() >= 4 and points[points.size() - 1].position.distance_to(points[0].position) <= CLOSE_DISTANCE
 
 
 func train_length() -> float:

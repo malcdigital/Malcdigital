@@ -11,6 +11,9 @@ var cost := 0.0
 var cost_parts: Array[Dictionary] = []
 var max_height_above_ground := 0.0
 var valid := false
+## Unfinished track: the spline, supports and cost exist for drawing, but
+## there is no ride (record and ratings are null).
+var open := false
 
 
 ## Analyse in one go (tests, tools, worker threads).

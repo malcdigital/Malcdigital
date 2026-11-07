@@ -525,6 +525,12 @@ func update_analysis(a: TrackAnalyzer) -> void:
 	var d: TrackData = main.data
 	var c := Contracts.find(d.contract_id)
 	var head := "[b]%s[/b]  [color=#9ab]%s[/color]" % [d.name, CoasterTypes.type_name(d.coaster_type)]
+	if a != null and a.open:
+		var gap := d.points[d.points.size() - 1].position.distance_to(d.points[0].position)
+		stats_label.text = head + "\n[color=#fc4][b]Unfinished track[/b][/color] · %.0f m built · Cost %s\n" % [a.spline.length, CostModel.money(a.cost)] + \
+			"Build from the end of the track (Add element or + Point), then bring it back to the [color=#6f6]green handle[/color] at the start of the station. It joins up within %.0f m.\n[color=#9ab]End is %.0f m from the station.[/color]" % [TrackData.CLOSE_DISTANCE, gap]
+		graph.set_data(null, null, [] as Array[Dictionary])
+		return
 	if a == null or not a.valid:
 		stats_label.text = head + "\n[b]Track needs at least 4 points[/b]"
 		graph.set_data(null, null, [] as Array[Dictionary])
@@ -963,7 +969,7 @@ func _brief_text(c: Dictionary) -> String:
 
 
 func show_brief(c: Dictionary) -> void:
-	brief_label.text = _brief_text(c) + "\n\nThe station and a small starter loop are in place. Build out from there; the stats panel tracks every goal live."
+	brief_label.text = _brief_text(c) + "\n\nYou start with just the station. Build out from its end and bring the track back to close the circuit; the stats panel tracks every goal live."
 	_open(brief_panel)
 
 

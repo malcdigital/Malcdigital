@@ -33,6 +33,9 @@ const BANK_SMOOTH_M := 5.0
 
 var length := 0.0
 var count := 0
+## False for an unfinished track that does not loop back to the station yet.
+## Open tracks are baked for drawing only (no ride simulation).
+var closed := true
 var ds := DEFAULT_SPACING
 
 var positions := PackedVector3Array()
@@ -63,7 +66,8 @@ var twists := PackedFloat32Array()
 ## (TrackAnalyzer does both, because auto-banking needs a speed estimate).
 func bake(data: TrackData, spacing: float = DEFAULT_SPACING) -> bool:
 	var n := data.points.size()
-	if n < 3:
+	closed = not data.open
+	if n < (3 if closed else 2):
 		count = 0
 		length = 0.0
 		return false
@@ -76,11 +80,19 @@ func bake(data: TrackData, spacing: float = DEFAULT_SPACING) -> bool:
 	point_s.resize(n)
 	var acc := 0.0
 	var prev := data.points[0].position
-	for i in n:
-		var p0 := data.points[(i - 1 + n) % n].position
+	var segs := n if closed else n - 1
+	for i in segs:
 		var p1 := data.points[i].position
 		var p2 := data.points[(i + 1) % n].position
-		var p3 := data.points[(i + 2) % n].position
+		var p0: Vector3
+		var p3: Vector3
+		if closed:
+			p0 = data.points[(i - 1 + n) % n].position
+			p3 = data.points[(i + 2) % n].position
+		else:
+			# Open ends: mirror the neighbour so the curve leaves straight.
+			p0 = data.points[i - 1].position if i > 0 else p1 * 2.0 - p2
+			p3 = data.points[i + 2].position if i + 2 < n else p2 * 2.0 - p1
 		var knots := _centripetal_knots(p0, p1, p2, p3)
 		var steps := clampi(ceili(p1.distance_to(p2) / 0.2), 12, 2000)
 		point_s[i] = acc
@@ -93,19 +105,28 @@ func bake(data: TrackData, spacing: float = DEFAULT_SPACING) -> bool:
 			dense_s.append(acc)
 			dense_seg.append(i)
 			dense_t.append(t)
-	# Close the circuit back at point 0.
-	acc += data.points[0].position.distance_to(prev)
-	dense_p.append(data.points[0].position)
+	# Close the circuit back at point 0 (or end at the last point).
+	var last := data.points[0].position if closed else data.points[n - 1].position
+	acc += last.distance_to(prev)
+	dense_p.append(last)
 	dense_s.append(acc)
-	dense_seg.append(n - 1)
+	dense_seg.append(segs - 1)
 	dense_t.append(1.0)
+	if not closed:
+		point_s[n - 1] = acc
 	length = acc
 	if length < 1.0:
 		count = 0
 		return false
 
-	count = maxi(16, roundi(length / spacing))
-	ds = length / float(count)
+	if closed:
+		count = maxi(16, roundi(length / spacing))
+		ds = length / float(count)
+	else:
+		# Open: include the end sample.
+		var steps_open := maxi(4, roundi(length / spacing))
+		count = steps_open + 1
+		ds = length / float(steps_open)
 	positions.resize(count)
 	segments.resize(count)
 	sample_segment.resize(count)
@@ -129,13 +150,15 @@ func bake(data: TrackData, spacing: float = DEFAULT_SPACING) -> bool:
 	curvatures.resize(count)
 	var inv_ds2 := 1.0 / (ds * ds)
 	for k in count:
-		var pa := positions[(k - 1 + count) % count]
+		var pa := positions[_nb(k, -1)]
 		var pb := positions[k]
-		var pc := positions[(k + 1) % count]
+		var pc := positions[_nb(k, 1)]
 		tangents[k] = (pc - pa).normalized()
 		# Second derivative w.r.t. arc length = curvature vector.
 		curvatures[k] = (pc - 2.0 * pb + pa) * inv_ds2
-	_smooth_vec3(curvatures, maxi(1, roundi(CURVATURE_SMOOTH_M / ds)))
+		if not closed and (k == 0 or k == count - 1):
+			curvatures[k] = Vector3.ZERO
+	_smooth_vec3(curvatures, maxi(1, roundi(CURVATURE_SMOOTH_M / ds)), closed)
 	for k in count:
 		# Curvature must be perpendicular to the tangent; drop numerical leftovers.
 		var t := tangents[k]
@@ -173,7 +196,7 @@ func _build_frames() -> void:
 	var up := Vector3.UP
 	# Two passes: the second starts from where the first ended so the seam
 	# where the circuit closes is continuous.
-	for pass_i in 2:
+	for pass_i in (2 if closed else 1):
 		for k in count:
 			var t := tangents[k]
 			up = up - t * up.dot(t)
@@ -221,8 +244,8 @@ func apply_banking(data: TrackData, speeds: PackedFloat32Array) -> void:
 		var weight := clampf((fu / G - 0.2) / 0.3, 0.0, 1.0)
 		auto_roll[k] = atan(fr / fu) * weight if fu > 0.01 else 0.0
 	var radius := maxi(1, roundi(BANK_SMOOTH_M / ds))
-	_smooth_float(auto_roll, radius)
-	_smooth_float(auto_roll, radius)
+	_smooth_float(auto_roll, radius, closed)
+	_smooth_float(auto_roll, radius, closed)
 
 	for k in count:
 		var i := sample_segment[k]
@@ -244,7 +267,7 @@ func apply_banking(data: TrackData, speeds: PackedFloat32Array) -> void:
 	# is -tau. So tau = -(d right / ds) . up.
 	twists.resize(count)
 	for k in count:
-		var dr := (rights[(k + 1) % count] - rights[(k - 1 + count) % count]) / (2.0 * ds)
+		var dr := (rights[_nb(k, 1)] - rights[_nb(k, -1)]) / (2.0 * ds)
 		twists[k] = -dr.dot(ups[k])
 	_count_inversions()
 
@@ -432,11 +455,28 @@ static func _catmull_rom(p0: Vector3, p1: Vector3, p2: Vector3, p3: Vector3, kn:
 	return b1 * ((t2 - u) / (t2 - t1)) + b2 * ((u - t1) / (t2 - t1))
 
 
-## Circular moving average (the track is a closed loop).
-static func _smooth_vec3(arr: PackedVector3Array, radius: int) -> void:
+## Neighbouring sample index: wraps on a closed track, clamps on an open one.
+func _nb(k: int, d: int) -> int:
+	return (k + d + count) % count if closed else clampi(k + d, 0, count - 1)
+
+
+## Moving average; circular on a closed track, clamped at the ends otherwise.
+static func _smooth_vec3(arr: PackedVector3Array, radius: int, wrap: bool = true) -> void:
 	var n := arr.size()
 	radius = mini(radius, n / 2 - 1)
 	if n == 0 or radius <= 0:
+		return
+	if not wrap:
+		var src2 := arr.duplicate()
+		for k in n:
+			var acc := Vector3.ZERO
+			var c := 0
+			for d in range(-radius, radius + 1):
+				var j := k + d
+				if j >= 0 and j < n:
+					acc += src2[j]
+					c += 1
+			arr[k] = acc / float(c)
 		return
 	var src := arr.duplicate()
 	var sum := Vector3.ZERO
@@ -448,10 +488,22 @@ static func _smooth_vec3(arr: PackedVector3Array, radius: int) -> void:
 		sum += src[(k + radius + 1) % n] - src[(k - radius + n) % n]
 
 
-static func _smooth_float(arr: PackedFloat32Array, radius: int) -> void:
+static func _smooth_float(arr: PackedFloat32Array, radius: int, wrap: bool = true) -> void:
 	var n := arr.size()
 	radius = mini(radius, n / 2 - 1)
 	if n == 0 or radius <= 0:
+		return
+	if not wrap:
+		var src2 := arr.duplicate()
+		for k in n:
+			var acc := 0.0
+			var c := 0
+			for d in range(-radius, radius + 1):
+				var j := k + d
+				if j >= 0 and j < n:
+					acc += src2[j]
+					c += 1
+			arr[k] = acc / float(c)
 		return
 	var src := arr.duplicate()
 	var sum := 0.0

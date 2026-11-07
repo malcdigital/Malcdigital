@@ -24,7 +24,7 @@ const G := 9.81
 ## Physics rate for live rides. 120 Hz keeps energy drift tiny with
 ## semi-implicit Euler; editor previews use 60 Hz (see setup()).
 const RIDE_DT := 1.0 / 120.0
-const PREVIEW_DT := 1.0 / 60.0
+const PREVIEW_DT := 1.0 / 30.0
 ## Chain dog / tyre acceleration when they catch the train (m/s²).
 const DRIVE_ACCEL := 2.5
 ## Give up if the train has not made forward progress for this long.
@@ -59,6 +59,9 @@ var _front_wet := false
 var seat_offset := 0.0
 
 var dt := RIDE_DT
+## Quick mode for the speed-only analysis pass: sample the front, middle and
+## back car instead of every car (speeds only feed auto-banking).
+var fast := false
 var record: RideRecord
 var _record_every := 2   # ticks per record entry (aim for 60 Hz records)
 var _tick := 0
@@ -122,7 +125,11 @@ func step() -> void:
 	var water := 0.0
 	var has_water := spline.water_depth.size() == spline.count
 	var gy := Vector3(0.0, G, 0.0)
-	for i in n:
+	var stride := 1
+	if fast and n > 3:
+		stride = maxi(1, (n - 1) / 2)
+		inv_n = 1.0 / float(ceili(float(n) / float(stride)))
+	for i in range(0, n, stride):
 		var cs := s - float(i) * data.car_spacing
 		var t := spline.tangent_at(cs)
 		# Gravity's component along the track: g_vec · T = (0,-g,0)·T = -g·T.y

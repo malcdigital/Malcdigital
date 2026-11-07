@@ -10,6 +10,7 @@ var spine_material: StandardMaterial3D
 var support_material: StandardMaterial3D
 var platform_material: StandardMaterial3D
 var tunnel_material: StandardMaterial3D
+var _tie_mesh: BoxMesh
 
 var _chunk_root: Node3D
 var _supports: MultiMeshInstance3D
@@ -35,6 +36,14 @@ func _ready() -> void:
 	tunnel_material.roughness = 0.95
 	platform_material = StandardMaterial3D.new()
 	platform_material.albedo_color = Color(0.45, 0.42, 0.38)
+	_tie_mesh = BoxMesh.new()
+	_tie_mesh.size = Vector3.ONE
+	var tie_mat := StandardMaterial3D.new()
+	tie_mat.vertex_color_use_as_albedo = true
+	tie_mat.vertex_color_is_srgb = true
+	tie_mat.metallic = 0.4
+	tie_mat.roughness = 0.5
+	_tie_mesh.material = tie_mat
 	_chunk_root = Node3D.new()
 	add_child(_chunk_root)
 	_supports = MultiMeshInstance3D.new()
@@ -52,6 +61,22 @@ func show_track(spline: TrackSpline, chunks: Array, site: SiteAnalysis = null, t
 		for li in lods.size():
 			var mi := MeshInstance3D.new()
 			mi.mesh = TrackMeshBuilder.to_mesh(lods[li], steel_material, spine_material, tunnel_material)
+			var ties: PackedFloat32Array = lods[li].get("ties", PackedFloat32Array())
+			if ties.size() > 0:
+				var mmi := MultiMeshInstance3D.new()
+				var mm := MultiMesh.new()
+				mm.transform_format = MultiMesh.TRANSFORM_3D
+				mm.use_colors = true
+				mm.mesh = _tie_mesh
+				mm.instance_count = ties.size() / 16
+				mm.buffer = ties
+				mmi.multimesh = mm
+				mmi.visibility_range_begin = mi.visibility_range_begin
+				mmi.visibility_range_begin_margin = mi.visibility_range_begin_margin
+				mmi.visibility_range_end = mi.visibility_range_end
+				mmi.visibility_range_end_margin = mi.visibility_range_end_margin
+				mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF if li > 0 else GeometryInstance3D.SHADOW_CASTING_SETTING_ON
+				_chunk_root.add_child(mmi)
 			# LOD switch by camera distance. A small overlap avoids gaps.
 			if li == 0:
 				mi.visibility_range_end = LOD_SWITCH_DISTANCE
