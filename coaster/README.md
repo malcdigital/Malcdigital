@@ -8,7 +8,7 @@ A 3D roller coaster design game built with Godot 4. You build a track, ride it i
 
 1. Install **Godot 4.3 or newer** (standard build, not .NET) from godotengine.org.
 2. Open Godot, choose **Import**, and select `coaster/project.godot`.
-3. Press **F5** (Play). A starter coaster loads, ready to ride.
+3. Press **F5** (Play). You start on an empty track: a station and a flat loop. File → New: starter coaster loads a complete example.
 
 Run the tests without opening the editor:
 

@@ -73,7 +73,8 @@ func _ready() -> void:
 	hud = Hud.new()
 	add_child(hud)
 	hud.setup(self)
-	_set_track(DefaultTracks.starter())
+	_set_track(DefaultTracks.empty())
+	editor.select(1)   # end of the platform: elements get added from here
 	hud.refresh_type(data, progress)
 
 
@@ -522,6 +523,16 @@ func focus_s(s: float, from_results: bool) -> void:
 # -----------------------------------------------------------------------------
 # Files
 # -----------------------------------------------------------------------------
+
+func new_empty_track() -> void:
+	var d := DefaultTracks.empty(data.coaster_type if data.contract_id == "" else CoasterTypes.Id.STEEL)
+	if data.contract_id == "":
+		d.terrain = data.terrain.copy()
+	_set_track(d)
+	editor.select(1)
+	hud.refresh_type(data, progress)
+	hud.toast("Empty track. The end of the platform is selected: use Add element to build from it.", 4.0)
+
 
 func new_track(blank: bool) -> void:
 	if blank:

@@ -239,6 +239,7 @@ func _build_editor_ui() -> void:
 	fp.add_item("Save...", 0)
 	fp.add_item("Load...", 1)
 	fp.add_separator()
+	fp.add_item("New: empty track", 6)
 	fp.add_item("New: starter coaster", 2)
 	fp.add_item("New: blank track", 3)
 	fp.add_separator()
@@ -469,6 +470,8 @@ func _on_file_menu(id: int) -> void:
 			show_contracts()
 		5:
 			main.leave_contract()
+		6:
+			main.new_empty_track()
 		_:
 			if id >= 10:
 				main.set_terrain_preset(id - 10)
