@@ -35,6 +35,10 @@ CI runs both on every push that touches `coaster/` (`.github/workflows/coaster.y
 | Move a group | Drag any selected point | Drag any selected point |
 | Shape the curve | Drag the cyan handles of the selected point (Alt + drag moves one handle only) | Drag the cyan handles |
 | Handle style | Point panel → Curve: Auto / Smooth / Corner | same |
+| Reset a curve | Double-click the point, or X | Double-tap the point |
+| Add a point exactly there | Double-click empty ground | Double-tap empty ground |
+
+Press **F1** or **?** (or tap **?** in the top bar) for the full list of shortcuts: Tab/Shift+Tab step through points, C cycles curve modes, B toggles auto-bank, [ and ] bank in 15° steps, 1/2/3 switch tools, G grid snap, M multi-select, O overlays, Q/E and +/- turn and zoom the camera, Home fits the track, Ctrl+A/S/O select all / save / load, and R rides again.
 | Delete point | Delete / Backspace | **Delete** |
 | Undo / redo | Ctrl+Z / Ctrl+Y (or Ctrl+Shift+Z) | **Undo** / **Redo** |
 | Test ride | Space / Enter | **Test ride** |

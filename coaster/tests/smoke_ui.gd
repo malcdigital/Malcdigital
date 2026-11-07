@@ -136,6 +136,26 @@ func _run() -> void:
 	main.set_handle_mode(TrackPoint.Handle.AUTO)
 	check(main.data.points[3].handle_mode == TrackPoint.Handle.AUTO, "handles reset to Auto")
 	await _wait_analysis(main)
+	# Double-tap a Smooth point: its curve resets to Auto.
+	main.set_handle_mode(TrackPoint.Handle.SMOOTH)
+	await _frames(30)
+	await create_timer(0.5).timeout
+	var ps := cam.unproject_position(main.data.points[3].position)
+	for i in 2:
+		_mouse_button(main.editor, ps, true)
+		_mouse_button(main.editor, ps, false)
+	check(main.data.points[3].handle_mode == TrackPoint.Handle.AUTO, "double-tap resets the curve")
+	# Double-tap empty ground: a new point appears after the selected one.
+	await create_timer(0.5).timeout
+	var before_n: int = main.data.points.size()
+	var gs := ps + Vector2(0, 120)
+	for i in 2:
+		_mouse_button(main.editor, gs, true)
+		_mouse_button(main.editor, gs, false)
+	check(main.data.points.size() == before_n + 1, "double-tap on the ground adds a point")
+	main.undo()
+	await create_timer(0.5).timeout
+	await _wait_analysis(main)
 
 	# --- Phase 2 --------------------------------------------------------------
 	# Coaster type switch (steel -> wooden is unlocked from the start).

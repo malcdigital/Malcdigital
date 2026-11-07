@@ -15,6 +15,13 @@ signal edit_started
 signal ground_stroke(phase: int, point: Vector3)
 ## Scenery tool: a tap on the ground.
 signal ground_tap(point: Vector3)
+## Track tool: double-click / double-tap on a point (or one of its handles).
+signal point_double_tapped(index: int)
+## Track tool: double-click / double-tap on empty ground.
+signal ground_double_tapped(point: Vector3)
+
+const DOUBLE_TAP_MS := 350
+const DOUBLE_TAP_PX := 24.0
 
 enum Tool { TRACK, TERRAIN, SCENERY }
 enum Stroke { BEGIN, MOVE, END }
@@ -360,6 +367,20 @@ func _unhandled_input(event: InputEvent) -> void:
 			_press_pos = event.position
 			_drag_started = false
 			_dragging_handle = _pick_curve_handle(event.position)
+			var target := selected if _dragging_handle >= 0 else _pick(event.position)
+			_press_target = target
+			if _is_double(event.position, target):
+				_pressing = false
+				_dragging_point = false
+				_dragging_handle = -1
+				if target >= 0:
+					point_double_tapped.emit(target)
+				else:
+					var g = _ground_hit(event.position)
+					if g != null:
+						ground_double_tapped.emit(g)
+				get_viewport().set_input_as_handled()
+				return
 			if _dragging_handle >= 0:
 				_dragging_point = true
 				get_viewport().set_input_as_handled()
@@ -388,6 +409,8 @@ func _unhandled_input(event: InputEvent) -> void:
 				_dragging_point = false
 				camera.begin_drag(MOUSE_BUTTON_LEFT)
 		elif _pressing:
+			if not _drag_started and event.position.distance_to(_press_pos) < DRAG_THRESHOLD_PX:
+				_record_tap(event.position, _press_target)
 			if _dragging_point and _drag_started:
 				points_moved.emit(false)
 			elif not _drag_started and _tap_toggles >= 0:
@@ -416,6 +439,26 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 var _tap_toggles := -1
+var _last_tap_ms := -10000
+var _last_tap_pos := Vector2.ZERO
+var _last_tap_target := -2        # point index, or -1 for empty ground
+var _press_target := -2
+
+
+## True when this press follows a quick tap (press + release, no drag) on
+## the same target. Drags never count, so grabbing a handle right after
+## moving a point can't reset it by accident.
+func _is_double(pos: Vector2, target: int) -> bool:
+	var dbl := Time.get_ticks_msec() - _last_tap_ms < DOUBLE_TAP_MS and pos.distance_to(_last_tap_pos) < DOUBLE_TAP_PX and target == _last_tap_target
+	if dbl:
+		_last_tap_ms = -10000
+	return dbl
+
+
+func _record_tap(pos: Vector2, target: int) -> void:
+	_last_tap_ms = Time.get_ticks_msec()
+	_last_tap_pos = pos
+	_last_tap_target = target
 var _preview: MeshInstance3D
 var _preview_mesh: ImmediateMesh
 

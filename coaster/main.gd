@@ -80,6 +80,8 @@ func _ready() -> void:
 		if not live: _refresh_point())
 	editor.ground_stroke.connect(_on_ground_stroke)
 	editor.ground_tap.connect(_on_ground_tap)
+	editor.point_double_tapped.connect(_on_point_double_tapped)
+	editor.ground_double_tapped.connect(_on_ground_double_tapped)
 	hud = Hud.new()
 	add_child(hud)
 	hud.setup(self)
@@ -394,6 +396,74 @@ func set_handle_mode(mode: int) -> void:
 			p.handle_out = cur[1]
 		p.handle_mode = mode
 	_after_edit()
+
+
+## Double-click / double-tap on a point: reset its curve to Auto.
+func _on_point_double_tapped(i: int) -> void:
+	if i < 0 or i >= data.points.size():
+		return
+	editor.select(i)
+	if data.points[i].handle_mode == TrackPoint.Handle.AUTO:
+		hud.toast("Curve is already automatic")
+		return
+	_begin_edit()
+	data.points[i].handle_mode = TrackPoint.Handle.AUTO
+	_after_edit()
+	hud.toast("Curve reset to automatic")
+
+
+## Double-click / double-tap on empty ground: add a point there, after the
+## selected point (or at the end of an unfinished track), at its height.
+func _on_ground_double_tapped(g: Vector3) -> void:
+	var i := _selected_or_last()
+	var y := data.points[i].position.y
+	_begin_edit()
+	var p := TrackPoint.new(Vector3(g.x, y, g.z))
+	if data.points[i].segment != TrackPoint.Segment.STATION:
+		p.segment = data.points[i].segment
+	if editor.snap:
+		p.position = p.position.snapped(Vector3.ONE * editor.snap_step)
+	data.points.insert(i + 1, p)
+	_after_edit(true)
+	editor.select(mini(i + 1, data.points.size() - 1))
+
+
+func cycle_handle_mode() -> void:
+	if editor.selected < 0:
+		return
+	set_handle_mode((data.points[editor.selected].handle_mode + 1) % TrackPoint.HANDLE_NAMES.size())
+	hud.toast("Curve: " + TrackPoint.HANDLE_NAMES[data.points[editor.selected].handle_mode])
+
+
+func reset_curves() -> void:
+	if editor.selected < 0:
+		return
+	set_handle_mode(TrackPoint.Handle.AUTO)
+	hud.toast("Curve reset to automatic")
+
+
+func toggle_auto_bank() -> void:
+	if editor.selected >= 0:
+		set_auto_bank(not data.points[editor.selected].auto_bank)
+		hud.toast("Auto-bank " + ("on" if data.points[editor.selected].auto_bank else "off"))
+
+
+func bank_step(deg: float) -> void:
+	if editor.selected < 0:
+		return
+	if data.points[editor.selected].auto_bank:
+		set_auto_bank(false)
+	set_bank(clampf(data.points[editor.selected].bank_deg + deg, -360.0, 360.0))
+	commit_bank()
+	hud.toast("Bank %d°" % int(data.points[editor.selected].bank_deg))
+
+
+func select_step(d: int) -> void:
+	var n := data.points.size()
+	if n == 0:
+		return
+	var i := (editor.selected + d + n) % n if editor.selected >= 0 else 0
+	editor.select(i)
 
 
 func set_point_spacing(m: float) -> void:
@@ -775,16 +845,33 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 func _unhandled_key_input(event: InputEvent) -> void:
-	if not (event is InputEventKey) or not event.pressed or event.echo or hud.any_dialog_open():
+	if not (event is InputEventKey) or not event.pressed or event.echo:
 		return
 	var k: InputEventKey = event
+	if hud.any_dialog_open():
+		if k.keycode == KEY_ESCAPE:
+			hud.close_dialogs()
+			get_viewport().set_input_as_handled()
+		return
 	var ctrl := k.ctrl_pressed or k.meta_pressed
+	if k.keycode == KEY_F1 or (k.keycode == KEY_SLASH and k.shift_pressed) or k.unicode == 63:   # F1 or ?
+		hud.show_shortcuts()
+		get_viewport().set_input_as_handled()
+		return
 	match mode:
 		Mode.EDIT:
 			if ctrl and k.keycode == KEY_Z:
 				redo() if k.shift_pressed else undo()
 			elif ctrl and k.keycode == KEY_Y:
 				redo()
+			elif ctrl and k.keycode == KEY_A:
+				select_all_points()
+			elif ctrl and k.keycode == KEY_S:
+				hud.open_save()
+			elif ctrl and k.keycode == KEY_O:
+				hud.open_load()
+			elif ctrl:
+				return
 			elif k.keycode == KEY_DELETE or k.keycode == KEY_BACKSPACE:
 				delete_point()
 			elif k.keycode == KEY_INSERT or k.keycode == KEY_N:
@@ -793,14 +880,38 @@ func _unhandled_key_input(event: InputEvent) -> void:
 				start_ride()
 			elif k.keycode == KEY_F:
 				focus_selected()
+			elif k.keycode == KEY_HOME:
+				frame_track()
 			elif k.keycode == KEY_H:
 				hud.height_toggle.button_pressed = not hud.height_toggle.button_pressed
+			elif k.keycode == KEY_G:
+				hud.snap_toggle.button_pressed = not hud.snap_toggle.button_pressed
+			elif k.keycode == KEY_M:
+				hud.multi_toggle.button_pressed = not hud.multi_toggle.button_pressed
+			elif k.keycode == KEY_C:
+				cycle_handle_mode()
+			elif k.keycode == KEY_X:
+				reset_curves()
+			elif k.keycode == KEY_B:
+				toggle_auto_bank()
+			elif k.keycode == KEY_BRACKETLEFT or k.keycode == KEY_BRACKETRIGHT:
+				bank_step(-15.0 if k.keycode == KEY_BRACKETLEFT else 15.0)
+			elif k.keycode == KEY_TAB:
+				select_step(-1 if k.shift_pressed else 1)
 			elif k.keycode == KEY_PAGEUP:
-				nudge(Vector3.UP)
+				nudge(Vector3.UP * (5.0 if k.shift_pressed else 1.0))
 			elif k.keycode == KEY_PAGEDOWN:
-				nudge(Vector3.DOWN)
+				nudge(Vector3.DOWN * (5.0 if k.shift_pressed else 1.0))
+			elif k.keycode == KEY_1 or k.keycode == KEY_2 or k.keycode == KEY_3:
+				set_tool(k.keycode - KEY_1)
+			elif k.keycode == KEY_O:
+				hud.overlay_option.select((hud.overlay_option.selected + 1) % hud.overlay_option.item_count)
+				set_overlay(hud.overlay_option.get_selected_id())
 			elif k.keycode == KEY_ESCAPE:
-				editor.select(-1)
+				if editor.tool != TrackEditor.Tool.TRACK:
+					set_tool(TrackEditor.Tool.TRACK)
+				else:
+					editor.select(-1)
 			else:
 				return
 		Mode.RIDE:
@@ -810,12 +921,14 @@ func _unhandled_key_input(event: InputEvent) -> void:
 				stop_ride()
 			elif k.keycode == KEY_TAB:
 				cycle_ride_speed()
+			elif k.keycode == KEY_R:
+				start_ride()
 			else:
 				return
 		Mode.RESULTS:
 			if k.keycode == KEY_ESCAPE:
 				back_to_editor()
-			elif k.keycode == KEY_SPACE or k.keycode == KEY_ENTER:
+			elif k.keycode == KEY_SPACE or k.keycode == KEY_ENTER or k.keycode == KEY_R:
 				start_ride()
 			else:
 				return

@@ -101,6 +101,16 @@ func _process(dt: float) -> void:
 	if Input.is_key_pressed(KEY_S) or Input.is_key_pressed(KEY_DOWN): move.y -= 1.0
 	if Input.is_key_pressed(KEY_A) or Input.is_key_pressed(KEY_LEFT): move.x -= 1.0
 	if Input.is_key_pressed(KEY_D) or Input.is_key_pressed(KEY_RIGHT): move.x += 1.0
+	var spin := 0.0
+	if Input.is_key_pressed(KEY_Q): spin -= 1.0
+	if Input.is_key_pressed(KEY_E): spin += 1.0
+	if spin != 0.0 and not Input.is_key_pressed(KEY_CTRL):
+		yaw += spin * 1.6 * dt
+		_apply()
+	if Input.is_key_pressed(KEY_EQUAL) or Input.is_key_pressed(KEY_KP_ADD):
+		zoom(1.0 - 1.5 * dt)
+	elif Input.is_key_pressed(KEY_MINUS) or Input.is_key_pressed(KEY_KP_SUBTRACT):
+		zoom(1.0 + 1.5 * dt)
 	if move != Vector2.ZERO and not Input.is_key_pressed(KEY_CTRL):
 		var fwd := Vector3(sin(yaw), 0, cos(yaw)) * -1.0
 		var right := Vector3(cos(yaw), 0, -sin(yaw))

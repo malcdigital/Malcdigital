@@ -78,6 +78,7 @@ func setup(p_main: Node) -> void:
 	_build_results()
 	_build_dialogs()
 	_build_contract_dialogs()
+	_build_help()
 	toast_label = Label.new()
 	toast_label.set_anchors_preset(Control.PRESET_CENTER_TOP)
 	toast_label.position = Vector2(-300, 80)
@@ -249,9 +250,12 @@ func _build_editor_ui() -> void:
 		fp.add_item("Terrain: " + TerrainData.PRESET_NAMES[i], 10 + i)
 	fp.add_separator()
 	fp.add_item("Leave contract (sandbox)", 5)
+	fp.add_separator()
+	fp.add_item("Shortcuts and gestures (F1)", 7)
 	fp.id_pressed.connect(_on_file_menu)
 	top.add_child(file_menu)
 	top.add_child(_button("Contracts", func() -> void: show_contracts()))
+	top.add_child(_button("?", func() -> void: show_shortcuts()))
 	overlay_option = OptionButton.new()
 	overlay_option.custom_minimum_size = Vector2(52, 52)
 	overlay_option.focus_mode = Control.FOCUS_NONE
@@ -491,11 +495,9 @@ func _build_editor_ui() -> void:
 func _on_file_menu(id: int) -> void:
 	match id:
 		0:
-			save_name.text = main.data.name
-			_open(save_panel)
+			open_save()
 		1:
-			_refresh_load_list()
-			_open(load_panel)
+			open_load()
 		2:
 			main.new_track(false)
 		3:
@@ -506,6 +508,8 @@ func _on_file_menu(id: int) -> void:
 			main.leave_contract()
 		6:
 			main.new_empty_track()
+		7:
+			show_shortcuts()
 		_:
 			if id >= 10:
 				main.set_terrain_preset(id - 10)
@@ -881,6 +885,13 @@ func _center(p: PanelContainer) -> void:
 
 func _dialog(title: String) -> PanelContainer:
 	var p := PanelContainer.new()
+	var solid := StyleBoxFlat.new()
+	solid.bg_color = Color(0.07, 0.09, 0.13, 0.98)
+	solid.set_corner_radius_all(10)
+	solid.set_content_margin_all(14)
+	solid.shadow_color = Color(0, 0, 0, 0.45)
+	solid.shadow_size = 12
+	p.add_theme_stylebox_override("panel", solid)
 	root.add_child(p)
 	p.set_anchors_preset(Control.PRESET_CENTER)
 	p.grow_horizontal = Control.GROW_DIRECTION_BOTH
@@ -907,8 +918,78 @@ func _refresh_load_list() -> void:
 		load_list.set_item_disabled(0, true)
 
 
+func open_save() -> void:
+	save_name.text = main.data.name
+	_open(save_panel)
+
+
+func open_load() -> void:
+	_refresh_load_list()
+	_open(load_panel)
+
+
+func close_dialogs() -> void:
+	for p in [save_panel, load_panel, contracts_panel, brief_panel, help_panel]:
+		p.visible = false
+
+
 func any_dialog_open() -> bool:
-	return save_panel.visible or load_panel.visible or contracts_panel.visible or brief_panel.visible
+	return save_panel.visible or load_panel.visible or contracts_panel.visible or brief_panel.visible or help_panel.visible
+
+
+var help_panel: PanelContainer
+
+const SHORTCUTS := """[b]Mouse and touch[/b]
+Double-click / double-tap a point: reset its curve to automatic
+Double-click / double-tap empty ground: add a point there (after the selected point)
+Drag a point: move it  ·  drag a cyan handle: bend the curve (Alt: one side only)
+Ctrl/Cmd + click: add or remove a point from the selection
+Drag empty space: orbit  ·  right/middle drag or two fingers: pan  ·  wheel or pinch: zoom
+
+[b]Editing[/b]
+N or Insert: add point  ·  Delete/Backspace: delete selected
+Tab / Shift+Tab: select next / previous point  ·  Ctrl+A: select all  ·  Esc: deselect
+PgUp / PgDn: raise / lower 1 m (Shift: 5 m)  ·  Shift + drag: move up/down
+C: cycle curve (Auto / Smooth / Corner)  ·  X: reset curve to automatic
+B: auto-bank on/off  ·  [ and ]: bank 15° left / right
+H: height mode  ·  G: grid snap  ·  M: multi-select
+1 / 2 / 3: Track / Terrain / Scenery tools  ·  O: next colour overlay
+Ctrl+Z: undo  ·  Ctrl+Y or Ctrl+Shift+Z: redo  ·  Ctrl+S: save  ·  Ctrl+O: load
+
+[b]Camera[/b]
+WASD or arrows: pan  ·  Q / E: turn  ·  + / -: zoom
+F: focus the selected point  ·  Home: fit the whole track
+
+[b]Riding[/b]
+Space or Enter: test ride  ·  C: POV / chase camera  ·  Tab: ride speed 1x/2x/4x
+R: ride again  ·  Esc: stop
+
+F1 or ?: this list"""
+
+
+func _build_help() -> void:
+	help_panel = _dialog("Shortcuts and gestures")
+	var v: VBoxContainer = help_panel.get_child(0)
+	var scroll := ScrollContainer.new()
+	scroll.custom_minimum_size = Vector2(minf(620.0, maxf(root.size.x - 60.0, 300.0)), minf(420.0, maxf(root.size.y - 140.0, 200.0)))
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	var t := RichTextLabel.new()
+	t.bbcode_enabled = true
+	t.fit_content = true
+	t.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	t.add_theme_font_size_override("normal_font_size", 16)
+	t.add_theme_font_size_override("bold_font_size", 17)
+	t.text = SHORTCUTS
+	scroll.add_child(t)
+	v.add_child(scroll)
+	var bb := HBoxContainer.new()
+	bb.alignment = BoxContainer.ALIGNMENT_END
+	bb.add_child(_button("Close", func() -> void: help_panel.visible = false))
+	v.add_child(bb)
+
+
+func show_shortcuts() -> void:
+	_open(help_panel)
 
 
 # -----------------------------------------------------------------------------
